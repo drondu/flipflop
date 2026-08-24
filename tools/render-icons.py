@@ -45,7 +45,7 @@ def make(size, maskable=False):
 
     return img.resize((size,size), Image.LANCZOS)
 
-here = os.path.dirname(os.path.abspath(__file__))
+here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")
 for n in (192, 512):
     make(n).save(os.path.join(here, f"icon-{n}.png"))
 for n in (192, 512):
