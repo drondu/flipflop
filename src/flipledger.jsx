@@ -114,8 +114,13 @@ const costOf = (it) =>
 const profitOf = (it) => (isOpen(it) ? 0 : num(it.sell) - costOf(it));
 
 const CATS = [
+  /* PC parts */
   "GPU", "CPU", "Motherboard", "RAM", "Storage", "PSU",
-  "Case", "Cooler", "Full PC", "Laptop", "Monitor", "Other",
+  "Case", "Cooler", "Full PC", "Laptop", "Monitor",
+  "Peripherals", "Optical drive", "Networking", "Console",
+  /* everything else that passes through the shop */
+  "TV", "Appliances", "Furniture", "Lighting", "Kitchenware",
+  "Wearables", "Bikes", "Bundle", "Other",
 ];
 
 const today = () => new Date().toISOString().slice(0, 10);
