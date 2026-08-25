@@ -83,8 +83,10 @@ def main(path, out):
         pub = date(r.get("Publishing date"))
         sold_on = date(r.get("Selling date"))
 
-        # unique, stable id derived from position
-        iid = f"csv{stamp:x}{n:04d}"
+        # Stable across runs: derived from the row position alone, so
+        # re-importing a corrected file updates rows in place instead
+        # of creating a second copy of every item.
+        iid = f"csvrow{n:04d}"
         assert iid not in seen
         seen.add(iid)
 
