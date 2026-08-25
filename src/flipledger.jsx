@@ -289,15 +289,30 @@ export default function App() {
           <DataView
             items={items}
             onBack={() => setView({ name: "list" })}
-            onRestore={async (payload) => {
+            onRestore={async (payload, mode) => {
               const list = (payload.items || []).map(normalise);
               for (const it of list) {
                 const p = payload.photos && payload.photos[it.id];
                 if (p) await sSet(kPhotos(it.id), p);
               }
-              await persist(list);
+              let next = list;
+              let added = list.length;
+              if (mode === "merge") {
+                const byId = new Map(items.map((i) => [i.id, i]));
+                added = 0;
+                for (const it of list) {
+                  if (!byId.has(it.id)) added += 1;
+                  byId.set(it.id, it);
+                }
+                next = [...byId.values()];
+              }
+              await persist(next);
               setView({ name: "list" });
-              flash(`Restored ${list.length} items`);
+              flash(
+                mode === "merge"
+                  ? `Added ${added} items (${next.length} total)`
+                  : `Restored ${list.length} items`
+              );
             }}
             flash={flash}
           />
@@ -888,6 +903,7 @@ function DataView({ items, onBack, onRestore, flash }) {
   const [working, setWorking] = useState(false);
   const [paste, setPaste] = useState("");
   const fileRef = useRef(null);
+  const pendingMode = useRef("merge");
 
   const buildPayload = async (withPhotos) => {
     const photos = {};
@@ -929,7 +945,7 @@ function DataView({ items, onBack, onRestore, flash }) {
     setWorking(false);
   };
 
-  const apply = (text) => {
+  const apply = (text, mode) => {
     let payload;
     try {
       payload = JSON.parse(text);
@@ -941,15 +957,16 @@ function DataView({ items, onBack, onRestore, flash }) {
       flash("That isn't a FlipLedger backup");
       return;
     }
-    onRestore(payload);
+    onRestore(payload, mode);
   };
 
   const pickFile = async (e) => {
     const file = (e.target.files || [])[0];
+    const mode = pendingMode.current;
     if (fileRef.current) fileRef.current.value = "";
     if (!file) return;
     try {
-      apply(await file.text());
+      apply(await file.text(), mode);
     } catch (err) {
       flash("Couldn't read that file");
     }
@@ -980,10 +997,30 @@ function DataView({ items, onBack, onRestore, flash }) {
         </Section>
 
         <Section title="Restore">
-          <p className="fl-hint fl-warn">This replaces everything currently in the ledger.</p>
+          <p className="fl-hint">
+            <strong>Add</strong> keeps what you already have and brings in anything new.
+            <br />
+            <span className="fl-warn">Replace</span> wipes the ledger first — use it only to
+            roll back to a backup.
+          </p>
           <div className="fl-btnrow">
-            <button className="fl-btn" onClick={() => fileRef.current && fileRef.current.click()}>
-              Load .json file
+            <button
+              className="fl-btn fl-btnprimary"
+              onClick={() => {
+                pendingMode.current = "merge";
+                if (fileRef.current) fileRef.current.click();
+              }}
+            >
+              Add from file
+            </button>
+            <button
+              className="fl-btn"
+              onClick={() => {
+                pendingMode.current = "replace";
+                if (fileRef.current) fileRef.current.click();
+              }}
+            >
+              Replace from file
             </button>
           </div>
           <input ref={fileRef} type="file" accept=".json,application/json" onChange={pickFile} style={{ display: "none" }} />
@@ -995,9 +1032,14 @@ function DataView({ items, onBack, onRestore, flash }) {
             placeholder="…or paste backup text here"
           />
           {paste.trim() && (
-            <button className="fl-btn fl-btnprimary" onClick={() => apply(paste)}>
-              Restore from pasted text
-            </button>
+            <div className="fl-btnrow">
+              <button className="fl-btn fl-btnprimary" onClick={() => apply(paste, "merge")}>
+                Add pasted
+              </button>
+              <button className="fl-btn" onClick={() => apply(paste, "replace")}>
+                Replace with pasted
+              </button>
+            </div>
           )}
         </Section>
         <div className="fl-spacer" />

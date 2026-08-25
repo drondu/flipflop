@@ -4,3 +4,7 @@ dist
 
 .env
 .env.local
+
+# generated import data
+flipledger-import.json
+*.csv
