@@ -110,7 +110,13 @@ def main(path, out):
             "fees": 0,
             "thumb": None,
             "photoCount": 0,
-            "created": stamp + n,
+            # order by when the item was actually acquired, so the app's
+            # "Newest" sort is meaningful; undated rows fall to the end
+            # in sheet order rather than jumping to the top
+            "created": (
+                int(datetime.strptime(pub or sold_on, "%Y-%m-%d").timestamp() * 1000) + n
+                if (pub or sold_on) else n
+            ),
         })
 
     payload = {"app": "flipledger", "v": 2,
