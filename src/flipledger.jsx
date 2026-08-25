@@ -212,7 +212,10 @@ export default function App() {
     const by = {
       /* undated records rank last in both directions, rather than
          reading as 1970 and heading the ascending sort */
-      new: (a, b) => dated(b) - dated(a),
+      /* default: still-to-sell first, newest first inside each group */
+      new: (a, b) =>
+        isOpen(a) !== isOpen(b) ? (isOpen(a) ? -1 : 1) : dated(b) - dated(a),
+      newest: (a, b) => dated(b) - dated(a),
       old: (a, b) => {
         const x = dated(a), y = dated(b);
         if (!x || !y) return (x ? 0 : 1) - (y ? 0 : 1);
@@ -422,7 +425,8 @@ function ListView({
             <button className="fl-clear" onClick={() => setQuery("")} aria-label="Clear search">×</button>
           )}
           <select className="fl-sort fl-mono" value={sort} onChange={(e) => setSort(e.target.value)}>
-            <option value="new">Newest</option>
+            <option value="new">Default</option>
+            <option value="newest">Newest added</option>
             <option value="old">Oldest</option>
             <option value="profit">Profit</option>
             <option value="held">Longest held</option>
