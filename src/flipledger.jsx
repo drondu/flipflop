@@ -149,7 +149,7 @@ const normalise = (it) => ({
 /* ------------------------------------------------------------------ */
 /* app                                                                  */
 /* ------------------------------------------------------------------ */
-export default function App() {
+export default function App({ onSignOut }) {
   const [items, setItems] = useState([]);
   const [settings, setSettings] = useState({ currency: "RON" });
   const [ready, setReady] = useState(false);
@@ -262,6 +262,7 @@ export default function App() {
             onOpen={(it) => setView({ name: "item", id: it.id })}
             onNew={() => setView({ name: "item", id: null, parent: null })}
             onData={() => setView({ name: "data" })}
+            onSignOut={onSignOut}
             onCurrency={(c) => persist(items, { ...settings, currency: c })}
           />
         )}
@@ -349,7 +350,7 @@ export default function App() {
 function ListView({
   items, all, cur, tied, realized, roi, closedCount, holdingCount, runList,
   filter, setFilter, query, setQuery, sort, setSort,
-  onOpen, onNew, onData, onCurrency,
+  onOpen, onNew, onData, onCurrency, onSignOut,
 }) {
   const maxAbs = Math.max(1, ...runList.map((i) => Math.abs(profitOf(i))));
   const counts = {
@@ -378,6 +379,11 @@ function ListView({
               <span className="fl-mono">{cur}</span>
               <span className="fl-rate fl-mono">1 € = 5,25</span>
             </button>
+            {onSignOut && (
+              <button className="fl-icon fl-iconmuted" onClick={onSignOut} aria-label="Sign out">
+                <span className="fl-mono">Exit</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -1109,7 +1115,7 @@ function Styles() {
     <style>{`
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
-html,body{background:#0E1113;}
+html,body{background:#0B0E10;}
 
 .fl-shell{
   color-scheme:dark;
@@ -1120,6 +1126,7 @@ html,body{background:#0E1113;}
   --card:#161A1D; --cardhi:#1B2023;
   --ink:#E8EDEF; --ink2:#8A959B;
   --fg:#E8EDEF; --fg2:#939EA4; --metal:#6E797F;
+  --onaccent:#0B0E10;
   --green:#3ECF74; --greendeep:#1B9E52; --amber:#E0A33A;
   --blue:#54A8DA; --red:#C4493A;
   --gain:#4ADB82; --loss:#FF8672;
@@ -1141,7 +1148,7 @@ html,body{background:#0E1113;}
 .fl-label{font-family:var(--mono);font-size:10px;letter-spacing:.12em;
   text-transform:uppercase;color:var(--metal);display:block;}
 .fl-hint{font-size:12.5px;line-height:1.5;color:var(--fg2);margin:0 0 11px;}
-.fl-warn{color:#E8A93C;}
+.fl-warn{color:var(--amber);}
 .fl-shell button{font-family:inherit;cursor:pointer;}
 .fl-shell button:focus-visible,.fl-shell input:focus-visible,
 .fl-shell select:focus-visible,.fl-shell textarea:focus-visible{
@@ -1149,14 +1156,16 @@ html,body{background:#0E1113;}
 
 /* header */
 .fl-head{padding:18px 16px 0;}
-.fl-headrow{display:flex;align-items:center;justify-content:space-between;gap:8px;}
-.fl-headbtns{display:flex;gap:7px;align-items:center;}
+.fl-headrow{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;}
+.fl-headbtns{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
 .fl-title{font-size:19px;font-weight:600;letter-spacing:-.03em;margin:0;color:var(--fg);}
 .fl-title-thin{font-weight:400;color:var(--green);}
 .fl-icon{border:1px solid var(--line);background:var(--surface);border-radius:999px;
   padding:5px 12px;font-size:11px;letter-spacing:.08em;color:var(--green);
   display:flex;align-items:baseline;gap:7px;}
 .fl-rate{font-size:9px;color:var(--metal);letter-spacing:.04em;}
+.fl-iconmuted{color:var(--fg2);}
+.fl-iconmuted:hover{color:var(--fg);border-color:var(--line2);}
 
 .fl-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px;}
 /* the two headline numbers: a top hairline in the stat's own colour
@@ -1263,29 +1272,29 @@ html,body{background:#0E1113;}
 .fl-cardfoot{display:flex;align-items:baseline;gap:8px;margin-top:6px;}
 .fl-cardfoot .fl-mono{font-size:12.5px;}
 .fl-card .fl-gain{color:#0F7A4B;}
-.fl-card .fl-loss{color:#C0392B;}
-.fl-card .fl-dim{color:#9AA3A8;}
+.fl-card .fl-loss{color:var(--loss);}
+.fl-card .fl-dim{color:var(--metal);}
 .fl-pct{font-size:10.5px;opacity:.7;}
 .fl-days{margin-left:auto;flex:0 0 auto;}
-.fl-aged{color:#B8801E;font-weight:600;}
+.fl-aged{color:var(--amber);font-weight:600;}
 .fl-date{flex:0 0 auto;}
 
 .fl-shot{position:relative;flex:0 0 84px;width:84px;align-self:stretch;background:rgba(0,0,0,.14);
-  display:flex;align-items:center;justify-content:center;border-left:1px solid #E4E8EA;overflow:hidden;}
+  display:flex;align-items:center;justify-content:center;border-left:1px solid rgba(255,255,255,.04);overflow:hidden;}
 .fl-shot img{width:100%;height:100%;object-fit:cover;display:block;}
 .fl-shotempty{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#6B767C;}
 .fl-shotcount{position:absolute;top:6px;right:6px;background:rgba(14,17,19,.78);color:#fff;
   font-size:9.5px;border-radius:4px;padding:1px 5px;}
 .fl-shotcode{position:absolute;bottom:5px;left:6px;font-size:9px;color:#fff;
   text-shadow:0 1px 3px rgba(0,0,0,.75);letter-spacing:.06em;}
-.fl-shotcode-plain{color:#8A949A;text-shadow:none;}
+.fl-shotcode-plain{color:var(--metal);text-shadow:none;}
 
 .fl-empty{border:1px dashed var(--line);border-radius:12px;padding:28px 20px;text-align:center;}
 .fl-emptytitle{font-size:15px;font-weight:500;margin:0 0 6px;color:var(--fg);}
 .fl-emptybody{font-size:13px;color:var(--fg2);margin:0;line-height:1.5;}
 
 .fl-fab{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
-  background:var(--green);color:#0E1113;border:none;border-radius:999px;
+  background:var(--green);color:var(--onaccent);border:none;border-radius:999px;
   padding:13px 24px;font-size:14px;font-weight:600;letter-spacing:-.01em;
   box-shadow:0 6px 24px rgba(62,207,116,.32);z-index:40;}
 .fl-fabplus{font-family:var(--mono);margin-right:4px;}
@@ -1297,7 +1306,7 @@ html,body{background:#0E1113;}
   background:var(--bg);border-bottom:1px solid var(--line);}
 .fl-back{background:none;border:none;font-size:14px;color:var(--fg2);padding:4px 0;}
 .fl-code{font-family:var(--mono);font-size:10px;color:var(--metal);letter-spacing:.06em;}
-.fl-save{background:var(--green);color:#0E1113;border:none;border-radius:999px;
+.fl-save{background:var(--green);color:var(--onaccent);border:none;border-radius:999px;
   padding:8px 18px;font-size:13px;font-weight:600;}
 .fl-save:disabled{opacity:.45;}
 .fl-formbody{padding:14px 16px 0;display:flex;flex-direction:column;gap:14px;}
@@ -1323,7 +1332,7 @@ html,body{background:#0E1113;}
   background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:4px;}
 .fl-segbtn{border:none;background:transparent;color:var(--fg2);border-radius:7px;
   padding:8px 2px;font-size:11.5px;font-family:var(--mono);letter-spacing:.02em;}
-.fl-segon{background:var(--green);color:#0E1113;font-weight:600;}
+.fl-segon{background:var(--green);color:var(--onaccent);font-weight:600;}
 .fl-segbody{margin-top:13px;}
 
 .fl-photos{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;}
@@ -1354,7 +1363,7 @@ html,body{background:#0E1113;}
 .fl-btnrow{display:flex;gap:9px;flex-wrap:wrap;}
 .fl-btn{flex:1;min-width:130px;border:1px solid var(--line);background:var(--surface2);
   color:var(--fg);border-radius:9px;padding:11px;font-size:13px;}
-.fl-btnprimary{background:var(--green);border-color:var(--green);color:#0E1113;font-weight:600;}
+.fl-btnprimary{background:var(--green);border-color:var(--green);color:var(--onaccent);font-weight:600;}
 .fl-btn:disabled{opacity:.5;}
 
 .fl-danger{display:flex;gap:9px;margin-top:2px;}
@@ -1372,7 +1381,7 @@ html,body{background:#0E1113;}
 .fl-vdel{font-size:13px;}
 
 .fl-toast{position:fixed;bottom:82px;left:50%;transform:translateX(-50%);
-  background:var(--green);color:#0E1113;padding:9px 16px;border-radius:999px;
+  background:var(--green);color:var(--onaccent);padding:9px 16px;border-radius:999px;
   font-size:12px;font-weight:600;z-index:70;}
 
 /* ------------------------------------------------------------------ */
@@ -1435,6 +1444,14 @@ html,body{background:#0E1113;}
   .fl-fab{left:auto;right:calc(50% - var(--shell,540px)/2 + 24px);
     transform:none;bottom:26px;}
   .fl-fab:hover{filter:brightness(1.06);}
+}
+
+/* touch: keep the pills visually small but give thumbs a real target
+   via a transparent inset, rather than inflating the header */
+@media (hover:none){
+  .fl-icon,.fl-chip{position:relative;}
+  .fl-icon::after,.fl-chip::after{content:"";position:absolute;
+    inset:-9px -4px;border-radius:999px;}
 }
 
 /* pointer-driven screens get a real hover lift; touch keeps it flat */

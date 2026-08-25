@@ -62,23 +62,12 @@ export default function Root() {
   if (phase === "auth") return <Auth />;
   return (
     <>
-      <App key={(session ? session.user.id : "local") + (migrated ? ":m" : "")} />
+      <App
+        key={(session ? session.user.id : "local") + (migrated ? ":m" : "")}
+        onSignOut={session ? () => supabase.auth.signOut() : null}
+      />
       {migrated && (
         <MigrationNote info={migrated} onClose={() => setMigrated(null)} />
-      )}
-      {session && (
-        <button
-          onClick={() => supabase.auth.signOut()}
-          title={session.user.email}
-          style={{
-            position: "fixed", top: 10, right: 10, zIndex: 80,
-            background: "rgba(24,28,31,.9)", border: "1px solid rgba(255,255,255,.09)",
-            color: "#8F999F", borderRadius: 999, padding: "5px 11px", fontSize: 11,
-            letterSpacing: ".06em",
-          }}
-        >
-          Sign out
-        </button>
       )}
     </>
   );
