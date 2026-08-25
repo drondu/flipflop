@@ -262,6 +262,7 @@ export default function App({ onSignOut }) {
             onOpen={(it) => setView({ name: "item", id: it.id })}
             onNew={() => setView({ name: "item", id: null, parent: null })}
             onData={() => setView({ name: "data" })}
+            onMonths={() => setView({ name: "months" })}
             onSignOut={onSignOut}
             onCurrency={(c) => persist(items, { ...settings, currency: c })}
           />
@@ -302,6 +303,14 @@ export default function App({ onSignOut }) {
               setView({ name: "list" });
               flash("Deleted");
             }}
+          />
+        )}
+
+        {view.name === "months" && (
+          <MonthsView
+            items={items}
+            cur={settings.currency}
+            onBack={() => setView({ name: "list" })}
           />
         )}
 
@@ -350,7 +359,7 @@ export default function App({ onSignOut }) {
 function ListView({
   items, all, cur, tied, realized, roi, closedCount, holdingCount, runList,
   filter, setFilter, query, setQuery, sort, setSort,
-  onOpen, onNew, onData, onCurrency, onSignOut,
+  onOpen, onNew, onData, onMonths, onCurrency, onSignOut,
 }) {
   const maxAbs = Math.max(1, ...runList.map((i) => Math.abs(profitOf(i))));
   const counts = {
@@ -368,6 +377,9 @@ function ListView({
             Flip<span className="fl-title-thin">Ledger</span>
           </h1>
           <div className="fl-headbtns">
+            <button className="fl-icon" onClick={onMonths} aria-label="Monthly breakdown">
+              <span className="fl-mono">Months</span>
+            </button>
             <button className="fl-icon" onClick={onData} aria-label="Backup and restore">
               <span className="fl-mono">Data</span>
             </button>
@@ -923,6 +935,119 @@ function ItemView({
 }
 
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* monthly breakdown                                                    */
+/* ------------------------------------------------------------------ */
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const monthLabel = (key) => {
+  if (key === "none") return "No date";
+  const [y, m] = key.split("-");
+  return `${MONTHS[Number(m) - 1]} ${y}`;
+};
+
+/* Groups closed items by the month they sold. Items with no sell date are
+   kept under "none" rather than dropped, so the rows still add up to the
+   realized total on the list screen. */
+function groupByMonth(items) {
+  const acc = new Map();
+  for (const it of items) {
+    if (isOpen(it)) continue;
+    const key = it.sellDate ? it.sellDate.slice(0, 7) : "none";
+    const row = acc.get(key) || { key, n: 0, revenue: 0, cost: 0, profit: 0 };
+    row.n += 1;
+    row.revenue += num(it.sell);
+    row.cost += costOf(it);
+    row.profit += profitOf(it);
+    acc.set(key, row);
+  }
+  const rows = [...acc.values()];
+  const dated = rows.filter((r) => r.key !== "none").sort((a, b) => b.key.localeCompare(a.key));
+  const undated = rows.filter((r) => r.key === "none");
+  return [...dated, ...undated];
+}
+
+function MonthsView({ items, cur, onBack }) {
+  const rows = useMemo(() => groupByMonth(items), [items]);
+  const best = rows.reduce((m, r) => (r.key !== "none" && r.profit > m ? r.profit : m), 0);
+  const totals = rows.reduce(
+    (a, r) => ({ n: a.n + r.n, revenue: a.revenue + r.revenue, profit: a.profit + r.profit }),
+    { n: 0, revenue: 0, profit: 0 }
+  );
+
+  return (
+    <div className="fl-form">
+      <header className="fl-formhead">
+        <button className="fl-back" onClick={onBack}>← Back</button>
+        <span className="fl-code">Months</span>
+        <span style={{ width: 52 }} />
+      </header>
+
+      <div className="fl-formbody">
+        {rows.length === 0 ? (
+          <p className="fl-hint">Nothing sold yet — months appear once you close a sale.</p>
+        ) : (
+          <>
+            <Section title="By month sold" note={`${totals.n} closed`}>
+              <div className="fl-months">
+                {rows.map((r) => {
+                  const share = best > 0 && r.profit > 0 ? Math.max(3, (r.profit / best) * 100) : 0;
+                  return (
+                    <div className="fl-month" key={r.key}>
+                      <div className="fl-monthtop">
+                        <span className="fl-monthname">{monthLabel(r.key)}</span>
+                        <span className={"fl-mono fl-monthprofit " + (r.profit >= 0 ? "fl-gain" : "fl-loss")}>
+                          {moneySigned(r.profit, cur)}
+                        </span>
+                      </div>
+                      <div className="fl-monthbar" aria-hidden="true">
+                        <span
+                          className={r.profit >= 0 ? "fl-monthfill" : "fl-monthfill fl-monthfillneg"}
+                          style={{ width: `${share}%` }}
+                        />
+                      </div>
+                      <div className="fl-monthfoot fl-mono">
+                        <span>{r.n} sold</span>
+                        <span className="fl-dim">in {money(r.cost, cur)}</span>
+                        <span className="fl-dim">out {money(r.revenue, cur)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Section>
+
+            <Section title="Total">
+              <div className="fl-ledger">
+                <div className="fl-lrow">
+                  <span className="fl-label">Items sold</span>
+                  <span className="fl-mono">{totals.n}</span>
+                </div>
+                <div className="fl-ledgerline" />
+                <div className="fl-lrow">
+                  <span className="fl-label">Revenue</span>
+                  <span className="fl-mono">{money(totals.revenue, cur)}</span>
+                </div>
+                <div className="fl-lrow fl-lrowbig">
+                  <span className="fl-label">Profit</span>
+                  <span className={"fl-mono " + (totals.profit >= 0 ? "fl-gain" : "fl-loss")}>
+                    {moneySigned(totals.profit, cur)}
+                  </span>
+                </div>
+              </div>
+              <p className="fl-hint" style={{ marginTop: 10 }}>
+                Grouped by sell date. Items closed without a date are listed
+                separately so the total still matches the ledger.
+              </p>
+            </Section>
+          </>
+        )}
+        <div className="fl-spacer" />
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* backup / restore                                                     */
 /* ------------------------------------------------------------------ */
 function DataView({ items, onBack, onRestore, flash }) {
@@ -1355,6 +1480,27 @@ html,body{background:#0B0E10;}
 .fl-lotnet{display:flex;justify-content:space-between;align-items:baseline;
   margin-top:12px;padding-top:11px;border-top:1px solid var(--line);}
 .fl-lotnet .fl-mono{font-size:15px;}
+
+.fl-months{display:flex;flex-direction:column;gap:9px;}
+.fl-month{background:var(--surface);border:1px solid var(--line);border-radius:11px;
+  padding:11px 12px 10px;}
+.fl-monthtop{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
+.fl-monthname{font-size:14px;font-weight:500;letter-spacing:-.01em;color:var(--fg);}
+.fl-monthprofit{font-size:15px;font-weight:600;letter-spacing:-.02em;}
+/* bar is proportional to the best month, so the shape is comparative
+   rather than absolute; hidden from screen readers since the figures
+   above already carry the same information */
+.fl-monthbar{height:4px;border-radius:999px;background:var(--surface2);
+  margin:9px 0 8px;overflow:hidden;}
+.fl-monthfill{display:block;height:100%;border-radius:999px;background:var(--green);}
+.fl-monthfillneg{background:var(--loss);}
+.fl-monthfoot{display:flex;gap:12px;font-size:10.5px;color:var(--fg2);flex-wrap:wrap;}
+@media (min-width:820px){
+  .fl-months{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+}
+@media (min-width:1180px){
+  .fl-months{grid-template-columns:repeat(3,minmax(0,1fr));}
+}
 
 .fl-ledger{background:var(--surface);border:1px solid rgba(62,207,116,.28);border-radius:12px;
   padding:14px 15px;color:var(--fg);box-shadow:0 0 18px rgba(62,207,116,.10);}
