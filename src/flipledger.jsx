@@ -1126,7 +1126,7 @@ html,body{background:#0E1113;}
   --sans:'Instrument Sans',system-ui,-apple-system,sans-serif;
   --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
   background:var(--bg); color:var(--fg); font-family:var(--sans);
-  min-height:100vh; max-width:540px; margin:0 auto; position:relative;
+  min-height:100vh; max-width:var(--shell,540px); margin:0 auto; position:relative;
   -webkit-font-smoothing:antialiased;
 }
 .fl-shell *{box-sizing:border-box;}
@@ -1158,28 +1158,32 @@ html,body{background:#0E1113;}
   display:flex;align-items:baseline;gap:7px;}
 .fl-rate{font-size:9px;color:var(--metal);letter-spacing:.04em;}
 
-.fl-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;}
+.fl-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px;}
 /* the two headline numbers: a top hairline in the stat's own colour
    turns them into gauges rather than plain boxes */
-.fl-stat{position:relative;background:var(--surface);border:1px solid var(--line);
+.fl-stat{position:relative;min-width:0;background:var(--surface);border:1px solid var(--line);
   border-radius:12px;padding:13px 14px 12px;overflow:hidden;}
 .fl-stat::before{content:"";position:absolute;inset:0 0 auto 0;height:2px;
   background:linear-gradient(90deg,var(--amber),rgba(224,163,58,0));opacity:.75;}
 .fl-stat:nth-child(2)::before{background:linear-gradient(90deg,var(--green),rgba(62,207,116,0));}
 .fl-statval{display:block;font-family:var(--mono);font-size:23px;font-weight:500;
-  letter-spacing:-.035em;margin-top:7px;font-variant-numeric:tabular-nums;color:var(--fg);}
-.fl-sub{display:block;font-family:var(--mono);font-size:10px;color:var(--metal);margin-top:4px;}
+  letter-spacing:-.035em;margin-top:7px;font-variant-numeric:tabular-nums;color:var(--fg);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+@media (max-width:430px){.fl-statval{font-size:19px;letter-spacing:-.04em;}}
+@media (max-width:360px){.fl-statval{font-size:17px;}}
+.fl-sub{display:block;font-family:var(--mono);font-size:10px;color:var(--metal);margin-top:4px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 
 .fl-run{display:flex;align-items:flex-end;gap:3px;height:32px;margin-top:13px;padding:0 2px;
   overflow:hidden;border-bottom:1px solid var(--line);}
-.fl-runbar{flex:1;min-width:3px;max-width:14px;border-radius:2px 2px 0 0;opacity:.85;
+.fl-runbar{flex:1;min-width:3px;max-width:22px;border-radius:2px 2px 0 0;opacity:.85;
   transition:opacity .15s ease;}
 .fl-run:hover .fl-runbar{opacity:.5;}
 .fl-run .fl-runbar:hover{opacity:1;}
 .fl-runup{background:var(--green);}
 .fl-rundown{background:var(--loss);}
 
-.fl-searchrow{display:flex;gap:7px;margin-top:14px;position:relative;}
+.fl-searchrow{display:flex;gap:7px;margin-top:14px;position:relative;min-width:0;}
 .fl-search{flex:1;min-width:0;border:1px solid var(--line);background:var(--surface);
   border-radius:9px;padding:10px 12px;font-size:14px;color:var(--fg);font-family:var(--sans);
   transition:border-color .15s ease, background .15s ease;}
@@ -1370,6 +1374,76 @@ html,body{background:#0E1113;}
 .fl-toast{position:fixed;bottom:82px;left:50%;transform:translateX(-50%);
   background:var(--green);color:#0E1113;padding:9px 16px;border-radius:999px;
   font-size:12px;font-weight:600;z-index:70;}
+
+/* ------------------------------------------------------------------ */
+/* responsive: phone-first, then widen the shell and let the list       */
+/* become a grid. Cards are self-contained tiles, so columns are the    */
+/* natural use of a desktop viewport rather than a wider single file.   */
+/* ------------------------------------------------------------------ */
+
+/* small phones: reclaim horizontal space */
+@media (max-width:400px){
+  .fl-head{padding:14px 12px 0;}
+  .fl-list{padding:10px 12px 0;}
+  .fl-stats{gap:8px;}
+  .fl-statval{font-size:20px;}
+  .fl-shot{flex:0 0 68px;width:68px;}
+  .fl-sort{flex:0 0 96px;}
+  .fl-name{font-size:14px;}
+}
+
+/* large phones and up: a touch more air */
+@media (min-width:560px){
+  .fl-shell{--shell:600px;}
+  .fl-head{padding:22px 20px 0;}
+  .fl-list{padding:14px 20px 0;}
+}
+
+/* tablets: two columns, and the stats can breathe */
+@media (min-width:820px){
+  .fl-shell{--shell:820px;}
+  .fl-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+    align-items:stretch;gap:10px;}
+  /* names clamp to one line in grid mode, so rows stay even */
+  .fl-list .fl-name{-webkit-line-clamp:1;min-height:0;}
+  .fl-list .fl-card{height:100%;}
+  .fl-stats{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .fl-run{height:38px;}
+  /* the reveal cascades across the grid, so keep it short */
+  .fl-list>*{animation-duration:.28s;}
+}
+
+/* desktop: three columns and a wider shell */
+@media (min-width:1180px){
+  .fl-shell{--shell:1180px;}
+  .fl-list{grid-template-columns:repeat(3,minmax(0,1fr));gap:11px;}
+  .fl-head{padding:26px 24px 0;}
+  .fl-list{padding:16px 24px 0;}
+  .fl-statval{font-size:26px;}
+  .fl-run{height:44px;}
+}
+
+/* very wide: cap the columns so cards never stretch into letterboxes */
+@media (min-width:1500px){
+  .fl-shell{--shell:1420px;}
+  .fl-list{grid-template-columns:repeat(4,minmax(0,1fr));}
+}
+
+/* on desktop the add button belongs near the cursor, not floating
+   in the middle of a wide viewport */
+@media (min-width:820px){
+  .fl-fab{left:auto;right:calc(50% - var(--shell,540px)/2 + 24px);
+    transform:none;bottom:26px;}
+  .fl-fab:hover{filter:brightness(1.06);}
+}
+
+/* pointer-driven screens get a real hover lift; touch keeps it flat */
+@media (hover:hover) and (pointer:fine){
+  .fl-card{transition:background .16s ease, border-color .16s ease,
+    transform .16s ease, box-shadow .16s ease;}
+  .fl-card:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,0,0,.45);}
+}
+
 @media (prefers-reduced-motion:reduce){.fl-shell *{transition:none !important;animation:none !important;}}
 `}</style>
   );
