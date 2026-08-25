@@ -8,3 +8,5 @@ dist
 # generated import data
 flipledger-import.json
 *.csv
+__pycache__/
+*.pyc
