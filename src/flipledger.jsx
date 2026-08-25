@@ -105,6 +105,11 @@ const STATUS = {
   parted: { label: "Parted out", short: "Parted" },
   writeoff: { label: "Written off", short: "Write-off" },
 };
+/* 0 when an item has no usable date, so sorts can push it to the end */
+const dated = (it) => {
+  const t = Number(it.created) || 0;
+  return t > 86400000 ? t : 0;
+};
 const isOpen = (it) => (it.status || "holding") === "holding";
 const statusOf = (it) => it.status || "holding";
 
@@ -205,8 +210,14 @@ export default function App() {
         .filter(Boolean).join(" ").toLowerCase().includes(q);
     });
     const by = {
-      new: (a, b) => (b.created || 0) - (a.created || 0),
-      old: (a, b) => (a.created || 0) - (b.created || 0),
+      /* undated records rank last in both directions, rather than
+         reading as 1970 and heading the ascending sort */
+      new: (a, b) => dated(b) - dated(a),
+      old: (a, b) => {
+        const x = dated(a), y = dated(b);
+        if (!x || !y) return (x ? 0 : 1) - (y ? 0 : 1);
+        return x - y;
+      },
       profit: (a, b) => profitOf(b) - profitOf(a),
       held: (a, b) => (daysHeld(b) || 0) - (daysHeld(a) || 0),
     };
