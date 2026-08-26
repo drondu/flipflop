@@ -100,7 +100,8 @@ const toField = (v, cur) => {
 /* item model                                                           */
 /* ------------------------------------------------------------------ */
 const STATUS = {
-  holding: { label: "Holding", short: "Holding" },
+  /* key stays "holding" so existing records keep resolving */
+  holding: { label: "In progress", short: "In progress" },
   sold: { label: "Sold", short: "Sold" },
   parted: { label: "Parted out", short: "Parted" },
   writeoff: { label: "Written off", short: "Write-off" },
@@ -141,6 +142,7 @@ const daysHeld = (it) => {
 const normalise = (it) => ({
   status: it.sold ? "sold" : "holding",
   inShipping: 0,
+  esp: "",
   parentId: null,
   lot: false,
   ...it,
@@ -454,7 +456,7 @@ function ListView({
         <div className="fl-chiprow fl-filters">
           {[
             ["all", "All"],
-            ["holding", "Holding"],
+            ["holding", "In progress"],
             ["sold", "Sold"],
             ["closed", "Parted / off"],
           ].map(([k, l]) => (
@@ -537,7 +539,13 @@ function Card({ it, cur, parent, childCount, onOpen }) {
 
         <span className="fl-cardfoot">
           {isOpen(it) ? (
-            <span className="fl-mono fl-dim fl-small">{it.source || "In stock"}</span>
+            num(it.esp) ? (
+              <span className="fl-mono fl-small fl-esp">
+                asking {money(it.esp, cur)}
+              </span>
+            ) : (
+              <span className="fl-mono fl-dim fl-small">{it.source || "In stock"}</span>
+            )
           ) : (
             <span className={"fl-mono fl-strong " + (p >= 0 ? "fl-gain" : "fl-loss")}>
               {moneySigned(p, cur)}
@@ -589,6 +597,7 @@ function ItemView({
     source: "",
     inShipping: "",
     refurb: "",
+    esp: "",
     notes: "",
     status: "holding",
     sell: "",
@@ -611,6 +620,7 @@ function ItemView({
           buy: toField(existing.buy, cur),
           inShipping: toField(existing.inShipping, cur),
           refurb: toField(existing.refurb, cur),
+          esp: toField(existing.esp, cur),
           sell: toField(existing.sell, cur),
           shipping: toField(existing.shipping, cur),
           packaging: toField(existing.packaging, cur),
@@ -665,6 +675,9 @@ function ItemView({
   /* form values are in the active currency */
   const cost = costOf(f);
   const profit = st === "holding" ? null : num(f.sell) - cost;
+  /* only while open: once sold, the real figure is what matters */
+  const expectedProfit =
+    st === "holding" && String(f.esp).trim() !== "" ? num(f.esp) - cost : null;
 
   const kids = existing ? items.filter((i) => i.parentId === existing.id) : [];
   const lots = items.filter((i) => i.lot && i.id !== f.id);
@@ -680,6 +693,8 @@ function ItemView({
         buy: toRon(f.buy, cur),
         inShipping: toRon(f.inShipping, cur),
         refurb: toRon(f.refurb, cur),
+        /* stored in RON like every other amount */
+        esp: toRon(f.esp, cur),
         sell: st === "holding" ? 0 : toRon(f.sell, cur),
         shipping: st === "sold" ? toRon(f.shipping, cur) : 0,
         packaging: st === "sold" ? toRon(f.packaging, cur) : 0,
@@ -778,6 +793,24 @@ function ItemView({
               <input className="fl-in fl-mono" inputMode="decimal" value={f.refurb} onChange={set("refurb")} placeholder="0" />
             </Field>
           </div>
+          <Field label={`Expected selling price (${cur})`}>
+            <input
+              className="fl-in fl-mono"
+              inputMode="decimal"
+              value={f.esp}
+              onChange={set("esp")}
+              placeholder="What you hope to get"
+            />
+          </Field>
+          {expectedProfit !== null && (
+            <p className="fl-hint fl-espnote">
+              Expected profit{" "}
+              <span className={expectedProfit >= 0 ? "fl-gain" : "fl-loss"}>
+                {signed(expectedProfit, cur)}
+              </span>{" "}
+              against {fmt(cost, cur)} in.
+            </p>
+          )}
         </Section>
 
         <Section title="Status">
@@ -1520,6 +1553,8 @@ html,body{background:#0B0E10;}
   margin:9px 0 8px;overflow:hidden;}
 .fl-monthfill{display:block;height:100%;border-radius:999px;background:var(--green);}
 .fl-monthfillneg{background:var(--loss);}
+.fl-espnote{margin:9px 0 0;}
+.fl-esp{color:var(--amber);}
 .fl-monthfoot{display:flex;gap:12px;font-size:10.5px;color:var(--fg2);flex-wrap:wrap;}
 @media (min-width:820px){
   .fl-months{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
