@@ -953,9 +953,15 @@ function groupByMonth(items) {
   for (const it of items) {
     if (isOpen(it)) continue;
     const key = it.sellDate ? it.sellDate.slice(0, 7) : "none";
-    const row = acc.get(key) || { key, n: 0, revenue: 0, cost: 0, profit: 0 };
+    const row = acc.get(key) || {
+      key, n: 0, revenue: 0, invested: 0, transport: 0, cost: 0, profit: 0,
+    };
     row.n += 1;
     row.revenue += num(it.sell);
+    row.invested += num(it.buy);
+    /* transport is everything spent beyond the purchase price:
+       inbound shipping plus any refurb, postage, packaging or fees */
+    row.transport += costOf(it) - num(it.buy);
     row.cost += costOf(it);
     row.profit += profitOf(it);
     acc.set(key, row);
@@ -970,8 +976,15 @@ function MonthsView({ items, cur, onBack }) {
   const rows = useMemo(() => groupByMonth(items), [items]);
   const best = rows.reduce((m, r) => (r.key !== "none" && r.profit > m ? r.profit : m), 0);
   const totals = rows.reduce(
-    (a, r) => ({ n: a.n + r.n, revenue: a.revenue + r.revenue, profit: a.profit + r.profit }),
-    { n: 0, revenue: 0, profit: 0 }
+    (a, r) => ({
+      n: a.n + r.n,
+      revenue: a.revenue + r.revenue,
+      invested: a.invested + r.invested,
+      transport: a.transport + r.transport,
+      cost: a.cost + r.cost,
+      profit: a.profit + r.profit,
+    }),
+    { n: 0, revenue: 0, invested: 0, transport: 0, cost: 0, profit: 0 }
   );
 
   return (
@@ -1007,8 +1020,9 @@ function MonthsView({ items, cur, onBack }) {
                       </div>
                       <div className="fl-monthfoot fl-mono">
                         <span>{r.n} sold</span>
-                        <span className="fl-dim">in {money(r.cost, cur)}</span>
-                        <span className="fl-dim">out {money(r.revenue, cur)}</span>
+                        <span className="fl-dim">invested {money(r.invested, cur)}</span>
+                        <span className="fl-dim">transport {money(r.transport, cur)}</span>
+                        <span className="fl-dim">sold {money(r.revenue, cur)}</span>
                       </div>
                     </div>
                   );
@@ -1023,6 +1037,18 @@ function MonthsView({ items, cur, onBack }) {
                   <span className="fl-mono">{totals.n}</span>
                 </div>
                 <div className="fl-ledgerline" />
+                <div className="fl-lrow">
+                  <span className="fl-label">Invested</span>
+                  <span className="fl-mono">{money(totals.invested, cur)}</span>
+                </div>
+                <div className="fl-lrow">
+                  <span className="fl-label">Transport</span>
+                  <span className="fl-mono">{money(totals.transport, cur)}</span>
+                </div>
+                <div className="fl-lrow">
+                  <span className="fl-label">Total spent</span>
+                  <span className="fl-mono">{money(totals.cost, cur)}</span>
+                </div>
                 <div className="fl-lrow">
                   <span className="fl-label">Revenue</span>
                   <span className="fl-mono">{money(totals.revenue, cur)}</span>
