@@ -5,8 +5,9 @@ dist
 .env
 .env.local
 
-# generated import data
+# generated import data and backups (contain real ledger data)
 flipledger-import.json
+flipledger-*.json
 *.csv
 __pycache__/
 *.pyc

@@ -48,10 +48,17 @@ export async function migrateLocalToCloud(userId) {
     }
   }
 
-  // Merge by id; anything already in the cloud wins.
+  // Merge by id, last write wins: the local copy is newer when the user
+  // kept editing offline, the cloud copy when another device moved on.
+  // `updated` is stamped on every save; `created` covers older records.
+  const stamp = (it) => it.updated || it.created || 0;
   const byId = new Map();
-  for (const it of localItems) if (it && it.id) byId.set(it.id, it);
   for (const it of cloudItems) if (it && it.id) byId.set(it.id, it);
+  for (const it of localItems) {
+    if (!it || !it.id) continue;
+    const cur = byId.get(it.id);
+    if (!cur || stamp(it) >= stamp(cur)) byId.set(it.id, it);
+  }
   const merged = [...byId.values()];
 
   const added = merged.length - cloudItems.length;

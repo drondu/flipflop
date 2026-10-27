@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import "./styles.css";
 
 /* ------------------------------------------------------------------ */
 /* storage                                                              */
@@ -23,6 +24,20 @@ async function sDel(key) {
   } catch (e) {
     /* may not exist */
   }
+}
+
+/* Card thumbnails live in the per-item photos keys, not in the items row:
+   a 240px JPEG per item would bloat the single items blob many times over. */
+async function thumbMapFor(list) {
+  const map = {};
+  await Promise.all(
+    list.filter((it) => it.photoCount > 0).map(async (it) => {
+      const p = await sGet(kPhotos(it.id), []);
+      const first = Array.isArray(p) && p[0];
+      if (first && first.thumb) map[it.id] = first.thumb;
+    })
+  );
+  return map;
 }
 
 /* ------------------------------------------------------------------ */
@@ -65,16 +80,30 @@ async function processFile(file) {
 /* ------------------------------------------------------------------ */
 const num = (v) => {
   if (v === null || v === undefined) return 0;
+  if (typeof v === "number") return isNaN(v) ? 0 : v;
   let s = String(v).replace(/\s/g, "");
   if (s === "") return 0;
+  /* Strip leading currency symbols (€$RON etc.) */
+  s = s.replace(/^[^\d.,-]+/i, "");
+  /* Strip trailing currency symbols */
+  s = s.replace(/[^\d.,-]+$/, "");
+  /* Handle negatives */
+  const neg = s.startsWith("-");
+  if (neg) s = s.slice(1);
+  if (!s) return 0;
+  /* The last separator is the decimal point, any earlier ones are
+     thousands separators — "1234,56", "1.234,56" and "1,234.56" all read
+     1234.56. Same rule as the CSV import tool, so what you type is what
+     the sheet had. */
   const dec = Math.max(s.lastIndexOf(","), s.lastIndexOf("."));
   if (dec > -1) {
     const int = s.slice(0, dec).replace(/[.,]/g, "");
     const frac = s.slice(dec + 1).replace(/[^0-9]/g, "");
     s = frac ? `${int}.${frac}` : int;
   }
+  if (!/^\d+(\.\d+)?$/.test(s)) return 0; /* junk — reject */
   const n = parseFloat(s);
-  return isNaN(n) ? 0 : n;
+  return isNaN(n) ? 0 : (neg ? -n : n);
 };
 const fmt = (n, cur) => {
   const v = Math.round((Number(n) || 0) * 100) / 100;
@@ -93,7 +122,7 @@ const moneySigned = (ron, cur) => signed(fromRon(ron, cur), cur);
 const toField = (v, cur) => {
   if (v === "" || v === null || v === undefined) return "";
   const n = fromRon(v, cur);
-  return n ? String(Math.round(n * 100) / 100) : "";
+  return String(Math.round(n * 100) / 100);
 };
 
 /* ------------------------------------------------------------------ */
@@ -138,13 +167,18 @@ const daysHeld = (it) => {
   return isNaN(d) ? null : Math.max(0, d);
 };
 
-/* migrate older records */
+/* Migrate older records: ensure all new fields exist so existing records
+   are compatible with the current schema. Old records may have a `sold`
+   boolean instead of a `status` string — convert that. Defaults are safe
+   for records that predate these fields. */
 const normalise = (it) => ({
-  status: it.sold ? "sold" : "holding",
+  status: (it.status || (it.sold ? "sold" : "holding")),
   inShipping: 0,
   esp: "",
   parentId: null,
   lot: false,
+  /* last-write-wins stamp for merges; 0 sorts oldest records first */
+  updated: 0,
   ...it,
 });
 
@@ -153,6 +187,7 @@ const normalise = (it) => ({
 /* ------------------------------------------------------------------ */
 export default function App({ onSignOut }) {
   const [items, setItems] = useState([]);
+  const [thumbs, setThumbs] = useState({});
   const [settings, setSettings] = useState({ currency: "RON" });
   const [ready, setReady] = useState(false);
   const [view, setView] = useState({ name: "list" });
@@ -162,15 +197,32 @@ export default function App({ onSignOut }) {
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
 
-  useEffect(() => {
-    (async () => {
-      const [i, s] = await Promise.all([sGet(K_ITEMS, []), sGet(K_SET, {})]);
-      setItems((Array.isArray(i) ? i : []).map(normalise));
-      setSettings({ currency: s && s.currency === "EUR" ? "EUR" : "RON" });
-      setReady(true);
-    })();
-    return () => toastTimer.current && clearTimeout(toastTimer.current);
+  const reload = useCallback(async () => {
+    const [i, s] = await Promise.all([sGet(K_ITEMS, []), sGet(K_SET, {})]);
+    const list = (Array.isArray(i) ? i : []).map(normalise);
+    setItems(list);
+    setSettings({ currency: s && s.currency === "EUR" ? "EUR" : "RON" });
+    setThumbs(await thumbMapFor(list));
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    reload().then(() => alive && setReady(true));
+    /* The storage layer notifies when its cache changes under us (a
+       re-prime after the network returns, a newer row from another
+       device) — pick the change up without a full remount. */
+    const un =
+      window.storage && window.storage.subscribe
+        ? window.storage.subscribe(() => {
+            if (alive) reload();
+          })
+        : null;
+    return () => {
+      alive = false;
+      if (un) un();
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    };
+  }, [reload]);
 
   const flash = useCallback((m) => {
     setToast(m);
@@ -231,23 +283,20 @@ export default function App({ onSignOut }) {
 
   if (!ready) {
     return (
-      <>
-        <Styles />
-        <div className="fl-shell fl-center">
-          <div className="fl-mono fl-dim">Loading ledger…</div>
-        </div>
-      </>
+      <div className="fl-shell fl-center">
+        <div className="fl-mono fl-dim">Loading ledger…</div>
+      </div>
     );
   }
 
   return (
     <>
-      <Styles />
       <div className="fl-shell">
         {view.name === "list" && (
           <ListView
             items={shown}
             all={items}
+            thumbs={thumbs}
             cur={cur}
             tied={tied}
             realized={realized}
@@ -277,6 +326,7 @@ export default function App({ onSignOut }) {
             presetParent={view.parent || null}
             items={items}
             cur={cur}
+            flash={flash}
             code={items.reduce((m, i) => Math.max(m, Number(i.code) || 0), 0) + 1}
             onCancel={() => setView({ name: "list" })}
             onJump={(id) => setView({ name: "item", id })}
@@ -292,6 +342,10 @@ export default function App({ onSignOut }) {
               await persist(
                 isNew ? [...items, item] : items.map((i) => (i.id === item.id ? item : i))
               );
+              setThumbs((m) => ({
+                ...m,
+                [item.id]: photos[0] && photos[0].thumb ? photos[0].thumb : null,
+              }));
               setView({ name: "list" });
               flash(isNew ? "Logged" : "Saved");
             }}
@@ -302,6 +356,11 @@ export default function App({ onSignOut }) {
                   .filter((i) => i.id !== id)
                   .map((i) => (i.parentId === id ? { ...i, parentId: null } : i))
               );
+              setThumbs((m) => {
+                const n = { ...m };
+                delete n[id];
+                return n;
+              });
               setView({ name: "list" });
               flash("Deleted");
             }}
@@ -319,12 +378,18 @@ export default function App({ onSignOut }) {
         {view.name === "data" && (
           <DataView
             items={items}
+            cloud={Boolean(onSignOut)}
             onBack={() => setView({ name: "list" })}
             onRestore={async (payload, mode) => {
               const list = (payload.items || []).map(normalise);
               for (const it of list) {
                 const p = payload.photos && payload.photos[it.id];
                 if (p) await sSet(kPhotos(it.id), p);
+              }
+              if (mode === "replace") {
+                /* drop photo blobs for items the restore removes */
+                const keep = new Set(list.map((it) => it.id));
+                for (const it of items) if (!keep.has(it.id)) await sDel(kPhotos(it.id));
               }
               let next = list;
               let added = list.length;
@@ -338,6 +403,7 @@ export default function App({ onSignOut }) {
                 next = [...byId.values()];
               }
               await persist(next);
+              setThumbs(await thumbMapFor(next));
               setView({ name: "list" });
               flash(
                 mode === "merge"
@@ -359,7 +425,7 @@ export default function App({ onSignOut }) {
 /* list                                                                 */
 /* ------------------------------------------------------------------ */
 function ListView({
-  items, all, cur, tied, realized, roi, closedCount, holdingCount, runList,
+  items, all, thumbs, cur, tied, realized, roi, closedCount, holdingCount, runList,
   filter, setFilter, query, setQuery, sort, setSort,
   onOpen, onNew, onData, onMonths, onCurrency, onSignOut,
 }) {
@@ -489,6 +555,9 @@ function ListView({
             key={it.id}
             it={it}
             cur={cur}
+            /* thumbnails come from the photos keys; `it.thumb` covers
+               legacy records written before the split */
+            thumb={thumbs[it.id] || it.thumb || null}
             parent={it.parentId ? all.find((p) => p.id === it.parentId) : null}
             childCount={it.lot ? all.filter((c) => c.parentId === it.id).length : 0}
             onOpen={() => onOpen(it)}
@@ -504,7 +573,7 @@ function ListView({
   );
 }
 
-function Card({ it, cur, parent, childCount, onOpen }) {
+function Card({ it, cur, thumb, parent, childCount, onOpen }) {
   const st = statusOf(it);
   const p = profitOf(it);
   const c = costOf(it);
@@ -568,9 +637,9 @@ function Card({ it, cur, parent, childCount, onOpen }) {
       </span>
 
       <span className="fl-shot">
-        {it.thumb ? <img src={it.thumb} alt="" /> : <span className="fl-shotempty fl-mono">no photo</span>}
+        {thumb ? <img src={thumb} alt="" /> : <span className="fl-shotempty fl-mono">no photo</span>}
         {it.photoCount > 1 && <span className="fl-shotcount fl-mono">{it.photoCount}</span>}
-        <span className={"fl-shotcode fl-mono" + (it.thumb ? "" : " fl-shotcode-plain")}>
+        <span className={"fl-shotcode fl-mono" + (thumb ? "" : " fl-shotcode-plain")}>
           #{String(it.code).padStart(4, "0")}
         </span>
       </span>
@@ -582,7 +651,7 @@ function Card({ it, cur, parent, childCount, onOpen }) {
 /* item form                                                            */
 /* ------------------------------------------------------------------ */
 function ItemView({
-  existing, presetParent, items, cur, code,
+  existing, presetParent, items, cur, code, flash,
   onCancel, onSave, onDelete, onJump, onAddPart,
 }) {
   const blank = {
@@ -661,9 +730,16 @@ function ItemView({
     if (!files.length) return;
     setBusy(true);
     const next = [...photos];
+    let skipped = 0;
     for (const file of files) {
-      try { next.push(await processFile(file)); } catch (err) { /* skip */ }
+      /* Only accept image types */
+      if (!file.type.startsWith("image/")) {
+        skipped += 1;
+        continue;
+      }
+      try { next.push(await processFile(file)); } catch (err) { skipped += 1; }
     }
+    if (skipped > 0) flash(`Skipped ${skipped} invalid file${skipped > 1 ? "s" : ""}`);
     setPhotos(next);
     setBusy(false);
   };
@@ -685,25 +761,63 @@ function ItemView({
   const kidsCost = kids.reduce((a, i) => a + costOf(i), 0);
   const lotNet = fromRon(kidsOut - kidsCost, cur) + num(f.sell) - cost;
 
-  const save = () =>
+  /* A field the user didn't change keeps its stored RON value exactly, so
+     repeatedly saving while displaying in EUR can't drift the figures. */
+  const keepOr = (k) => {
+    const s = String(f[k] ?? "");
+    if (existing && s === toField(existing[k], cur)) return existing[k];
+    return toRon(s, cur);
+  };
+
+  const save = () => {
+    /* Non-empty fields that don't parse to a number are rejected instead
+       of silently storing 0 ("1.234,56" is ambiguous, "abc" is junk). */
+    const badMoney = (v) => {
+      const s = String(v ?? "").trim();
+      if (s === "" || num(s) !== 0) return false;
+      const digits = s.replace(/\D/g, "");
+      return !digits || /[1-9]/.test(digits);
+    };
+    const fields = [
+      ["buy", "Price"],
+      ["inShipping", "Shipping in"],
+      ["refurb", "Repairs"],
+      ["esp", "Expected price"],
+      ...(st === "sold"
+        ? [["sell", "Sold for"], ["shipping", "Shipping"], ["packaging", "Packaging"], ["fees", "Fees"]]
+        : st === "parted"
+          ? [["sell", "Leftovers"]]
+          : st === "writeoff"
+            ? [["sell", "Recovered"]]
+            : []),
+    ];
+    const bad = fields.filter(([k]) => badMoney(f[k])).map(([, label]) => label);
+    if (bad.length) {
+      flash(`Not a valid number: ${bad.join(", ")}`);
+      return;
+    }
     onSave(
       {
         ...f,
         lot: !!f.lot,
-        buy: toRon(f.buy, cur),
-        inShipping: toRon(f.inShipping, cur),
-        refurb: toRon(f.refurb, cur),
+        buy: keepOr("buy"),
+        inShipping: keepOr("inShipping"),
+        refurb: keepOr("refurb"),
         /* stored in RON like every other amount */
-        esp: toRon(f.esp, cur),
-        sell: st === "holding" ? 0 : toRon(f.sell, cur),
-        shipping: st === "sold" ? toRon(f.shipping, cur) : 0,
-        packaging: st === "sold" ? toRon(f.packaging, cur) : 0,
-        fees: st === "sold" ? toRon(f.fees, cur) : 0,
+        esp: keepOr("esp"),
+        sell: st === "holding" ? 0 : keepOr("sell"),
+        shipping: st === "sold" ? keepOr("shipping") : 0,
+        packaging: st === "sold" ? keepOr("packaging") : 0,
+        fees: st === "sold" ? keepOr("fees") : 0,
+        /* last-write-wins stamp for local/cloud merges */
+        updated: Date.now(),
         photoCount: photos.length,
-        thumb: photos.length ? photos[0].thumb : null,
+        /* the thumbnail lives in the photos blob, not the items row */
+        thumb: null,
       },
       photos
     );
+  };
 
   return (
     <div className="fl-form">
@@ -1030,10 +1144,10 @@ function MonthsView({ items, cur, onBack }) {
 
       <div className="fl-formbody">
         {rows.length === 0 ? (
-          <p className="fl-hint">Nothing sold yet — months appear once you close a sale.</p>
+          <p className="fl-hint">Nothing closed yet — months appear once an item is sold, parted or written off.</p>
         ) : (
           <>
-            <Section title="By month sold" note={`${totals.n} closed`}>
+            <Section title="By month closed" note={`${totals.n} closed`}>
               <div className="fl-months">
                 {rows.map((r) => {
                   const share = best > 0 && r.profit > 0 ? Math.max(3, (r.profit / best) * 100) : 0;
@@ -1052,7 +1166,7 @@ function MonthsView({ items, cur, onBack }) {
                         />
                       </div>
                       <div className="fl-monthfoot fl-mono">
-                        <span>{r.n} sold</span>
+                        <span>{r.n} closed</span>
                         <span className="fl-dim">invested {money(r.invested, cur)}</span>
                         <span className="fl-dim">transport {money(r.transport, cur)}</span>
                         <span className="fl-dim">sold {money(r.revenue, cur)}</span>
@@ -1066,7 +1180,7 @@ function MonthsView({ items, cur, onBack }) {
             <Section title="Total">
               <div className="fl-ledger">
                 <div className="fl-lrow">
-                  <span className="fl-label">Items sold</span>
+                  <span className="fl-label">Items closed</span>
                   <span className="fl-mono">{totals.n}</span>
                 </div>
                 <div className="fl-ledgerline" />
@@ -1109,7 +1223,7 @@ function MonthsView({ items, cur, onBack }) {
 /* ------------------------------------------------------------------ */
 /* backup / restore                                                     */
 /* ------------------------------------------------------------------ */
-function DataView({ items, onBack, onRestore, flash }) {
+function DataView({ items, cloud, onBack, onRestore, flash }) {
   const [working, setWorking] = useState(false);
   const [paste, setPaste] = useState("");
   const fileRef = useRef(null);
@@ -1193,8 +1307,10 @@ function DataView({ items, onBack, onRestore, flash }) {
       <div className="fl-formbody">
         <Section title="Save a copy">
           <p className="fl-hint">
-            Everything lives in this browser only. Clear your browsing data and it's gone —
-            so pull a backup now and then. {items.length} items stored.
+            {cloud
+              ? "Your ledger syncs to your account, so it follows you across devices. Still pull a backup now and then — it's your only rollback. "
+              : "Everything lives in this browser only. Clear your browsing data and it's gone — so pull a backup now and then. "}
+            {items.length} items stored.
           </p>
           <div className="fl-btnrow">
             <button className="fl-btn fl-btnprimary" onClick={download} disabled={working}>
@@ -1288,391 +1404,5 @@ function Row({ label, value, tone, big }) {
         {value}
       </span>
     </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* styles                                                               */
-/* ------------------------------------------------------------------ */
-function Styles() {
-  return (
-    <style>{`
-@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-
-html,body{background:#0B0E10;}
-
-.fl-shell{
-  color-scheme:dark;
-  --bg:#0B0E10; --surface:#15191C; --surface2:#101417;
-  --line:#222829; --line2:#2E3538;
-  /* cards sit on dark now: the old white slabs turned a 239-row
-     ledger into a wall of glare and gave every item equal weight */
-  --card:#161A1D; --cardhi:#1B2023;
-  --ink:#E8EDEF; --ink2:#8A959B;
-  --fg:#E8EDEF; --fg2:#939EA4; --metal:#6E797F;
-  --onaccent:#0B0E10; --placeholder:#7A858B;
-  --green:#3ECF74; --greendeep:#1B9E52; --amber:#E0A33A;
-  --blue:#54A8DA; --red:#C4493A;
-  --gain:#4ADB82; --loss:#FF8672;
-  --sans:'Instrument Sans',system-ui,-apple-system,sans-serif;
-  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
-  background:var(--bg); color:var(--fg); font-family:var(--sans);
-  min-height:100vh; max-width:var(--shell,540px); margin:0 auto; position:relative;
-  padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right);
-  -webkit-font-smoothing:antialiased;
-}
-.fl-shell *{box-sizing:border-box;}
-.fl-center{display:flex;align-items:center;justify-content:center;height:60vh;}
-.fl-mono{font-family:var(--mono);font-variant-numeric:tabular-nums;}
-.fl-dim{color:var(--metal);}
-.fl-small{font-size:11px;}
-.fl-strong{font-weight:600;}
-.fl-gain{color:var(--gain);}
-.fl-loss{color:var(--loss);}
-.fl-spacer{height:calc(96px + env(safe-area-inset-bottom));}
-.fl-label{font-family:var(--mono);font-size:10px;letter-spacing:.12em;
-  text-transform:uppercase;color:var(--metal);display:block;}
-.fl-hint{font-size:12.5px;line-height:1.5;color:var(--fg2);margin:0 0 11px;}
-.fl-warn{color:var(--amber);}
-.fl-shell button{font-family:inherit;cursor:pointer;}
-.fl-shell button:focus-visible,.fl-shell input:focus-visible,
-.fl-shell select:focus-visible,.fl-shell textarea:focus-visible{
-  outline:2px solid var(--green);outline-offset:2px;}
-
-/* header */
-.fl-head{padding:18px 16px 0;}
-.fl-headrow{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;}
-.fl-headbtns{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
-.fl-title{font-size:19px;font-weight:600;letter-spacing:-.03em;margin:0;color:var(--fg);}
-.fl-title-thin{font-weight:400;color:var(--green);}
-.fl-icon{border:1px solid var(--line);background:var(--surface);border-radius:999px;
-  padding:5px 12px;font-size:11px;letter-spacing:.08em;color:var(--green);
-  display:flex;align-items:baseline;gap:7px;}
-.fl-rate{font-size:9px;color:var(--metal);letter-spacing:.04em;}
-.fl-iconmuted{color:var(--fg2);}
-.fl-iconmuted:hover{color:var(--fg);border-color:var(--line2);}
-
-.fl-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px;}
-/* the two headline numbers: a top hairline in the stat's own colour
-   turns them into gauges rather than plain boxes */
-.fl-stat{position:relative;min-width:0;background:var(--surface);border:1px solid var(--line);
-  border-radius:12px;padding:13px 14px 12px;overflow:hidden;}
-.fl-stat::before{content:"";position:absolute;inset:0 0 auto 0;height:2px;
-  background:linear-gradient(90deg,var(--amber),rgba(224,163,58,0));opacity:.75;}
-.fl-stat:nth-child(2)::before{background:linear-gradient(90deg,var(--green),rgba(62,207,116,0));}
-.fl-statval{display:block;font-family:var(--mono);font-size:23px;font-weight:500;
-  letter-spacing:-.035em;margin-top:7px;font-variant-numeric:tabular-nums;color:var(--fg);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-@media (max-width:430px){.fl-statval{font-size:19px;letter-spacing:-.04em;}}
-@media (max-width:360px){.fl-statval{font-size:17px;}}
-.fl-sub{display:block;font-family:var(--mono);font-size:10px;color:var(--metal);margin-top:4px;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-
-.fl-run{display:flex;align-items:flex-end;gap:3px;height:32px;margin-top:13px;padding:0 2px;
-  overflow:hidden;border-bottom:1px solid var(--line);}
-.fl-runbar{flex:1;min-width:3px;max-width:22px;border-radius:2px 2px 0 0;opacity:.85;
-  transition:opacity .15s ease;}
-.fl-run:hover .fl-runbar{opacity:.5;}
-.fl-run .fl-runbar:hover{opacity:1;}
-.fl-runup{background:var(--green);}
-.fl-rundown{background:var(--loss);}
-
-.fl-searchrow{display:flex;gap:7px;margin-top:14px;position:relative;min-width:0;}
-.fl-search{flex:1;min-width:0;border:1px solid var(--line);background:var(--surface);
-  border-radius:9px;padding:10px 12px;font-size:14px;color:var(--fg);font-family:var(--sans);
-  transition:border-color .15s ease, background .15s ease;}
-.fl-search:focus{outline:none;border-color:var(--greendeep);background:var(--surface2);}
-.fl-search::placeholder{color:var(--placeholder);}
-.fl-clear{position:absolute;right:118px;top:7px;background:none;border:none;
-  color:var(--metal);font-size:18px;line-height:1;padding:2px 6px;}
-.fl-sort{flex:0 0 112px;border:1px solid var(--line);background:var(--surface);
-  border-radius:9px;padding:10px 8px;font-size:11.5px;color:var(--fg2);
-  font-family:var(--mono);letter-spacing:.02em;
-  transition:border-color .15s ease, color .15s ease;}
-.fl-sort:hover{border-color:var(--line2);color:var(--fg);}
-
-.fl-chiprow{display:flex;gap:7px;flex-wrap:wrap;}
-.fl-filters{margin:11px 0 4px;}
-.fl-chip{border:1px solid var(--line);background:transparent;border-radius:999px;
-  padding:6px 12px;font-size:12.5px;color:var(--fg2);}
-.fl-chip{transition:background .15s ease, border-color .15s ease, color .15s ease;}
-.fl-chip:hover{border-color:var(--line2);color:var(--fg);}
-.fl-chip-on,.fl-chip-on:hover{background:var(--green);border-color:var(--green);
-  color:#0B0E10;font-weight:600;box-shadow:0 0 0 3px rgba(62,207,116,.12);}
-.fl-chipn{font-family:var(--mono);font-size:10px;opacity:.55;margin-left:2px;}
-
-/* list */
-.fl-list{padding:12px 16px 0;display:flex;flex-direction:column;gap:9px;}
-/* one orchestrated reveal on load; capped so a 239-row list does not
-   spend two seconds animating, and disabled for reduced-motion */
-@keyframes fl-rise{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
-.fl-list>*{animation:fl-rise .32s cubic-bezier(.22,.61,.36,1) backwards;}
-.fl-list>*:nth-child(1){animation-delay:.01s}
-.fl-list>*:nth-child(2){animation-delay:.035s}
-.fl-list>*:nth-child(3){animation-delay:.06s}
-.fl-list>*:nth-child(4){animation-delay:.085s}
-.fl-list>*:nth-child(5){animation-delay:.11s}
-.fl-list>*:nth-child(6){animation-delay:.135s}
-.fl-list>*:nth-child(7){animation-delay:.16s}
-.fl-list>*:nth-child(n+8){animation-delay:.18s}
-/* Only open positions glow. Everything closed recedes, so the eye lands
-   on what still needs selling instead of on 239 identical slabs. */
-.fl-card{display:flex;width:100%;text-align:left;background:var(--card);color:var(--ink);
-  border:1px solid var(--line);border-radius:11px;overflow:hidden;padding:0;
-  box-shadow:0 1px 2px rgba(0,0,0,.4);
-  transition:background .16s ease, border-color .16s ease, transform .12s ease;}
-.fl-card.fl-c-holding{background:var(--cardhi);border-color:rgba(224,163,58,.34);}
-.fl-card:hover{background:var(--cardhi);border-color:var(--line2);}
-.fl-card.fl-c-holding:hover{border-color:rgba(224,163,58,.55);}
-.fl-card:active{transform:scale(.995);}
-@media (hover:none){.fl-card:hover{background:var(--card);border-color:var(--line);}
-  .fl-card.fl-c-holding:hover{background:var(--cardhi);border-color:rgba(224,163,58,.34);}}
-.fl-strip{width:5px;flex:0 0 5px;}
-.fl-s-holding{background:var(--amber);}
-.fl-s-sold{background:var(--greendeep);}
-.fl-s-parted{background:var(--blue);}
-.fl-s-writeoff{background:var(--red);}
-.fl-cardbody{display:block;flex:1;padding:9px 11px 9px;min-width:0;}
-.fl-cardtop{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
-.fl-cat{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
-  background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.05);
-  border-radius:3px;padding:2px 6px;color:var(--ink2);}
-.fl-tag{font-family:var(--mono);font-size:9px;letter-spacing:.06em;border:1px solid var(--line2);
-  border-radius:3px;padding:1px 5px;color:var(--metal);}
-.fl-taglot{border-color:rgba(84,168,218,.34);background:rgba(84,168,218,.10);color:#7CC2E8;}
-.fl-state{margin-left:auto;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
-  text-transform:uppercase;}
-.fl-c-holding .fl-state{color:var(--amber);}
-.fl-c-sold .fl-state{color:var(--gain);}
-.fl-c-parted .fl-state{color:var(--blue);}
-.fl-c-writeoff .fl-state{color:var(--loss);}
-.fl-name{font-size:14.5px;font-weight:500;letter-spacing:-.012em;color:var(--ink);
-  margin:5px 0 4px;line-height:1.28;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
-.fl-price{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;}
-.fl-pricein{font-size:15px;font-weight:600;letter-spacing:-.02em;color:var(--ink);}
-.fl-card:not(.fl-c-holding) .fl-pricein{font-size:13px;font-weight:400;color:var(--metal);text-decoration:line-through;}
-.fl-arrow{color:var(--metal);font-size:12px;}
-.fl-priceout{font-size:15px;font-weight:600;letter-spacing:-.02em;color:var(--ink);}
-.fl-cardfoot{display:flex;align-items:baseline;gap:8px;margin-top:6px;}
-.fl-cardfoot .fl-mono{font-size:12.5px;}
-/* .fl-card .fl-gain inherits --gain; the old value was for white cards */
-.fl-card .fl-loss{color:var(--loss);}
-.fl-card .fl-dim{color:var(--metal);}
-.fl-pct{font-size:10.5px;opacity:.7;}
-.fl-days{margin-left:auto;flex:0 0 auto;}
-.fl-aged{color:var(--amber);font-weight:600;}
-.fl-date{flex:0 0 auto;}
-
-.fl-shot{position:relative;flex:0 0 84px;width:84px;align-self:stretch;background:rgba(0,0,0,.14);
-  display:flex;align-items:center;justify-content:center;border-left:1px solid rgba(255,255,255,.04);overflow:hidden;}
-.fl-shot img{width:100%;height:100%;object-fit:cover;display:block;}
-.fl-shotempty{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#808B91;}
-.fl-shotcount{position:absolute;top:6px;right:6px;background:rgba(14,17,19,.78);color:#fff;
-  font-size:9.5px;border-radius:4px;padding:1px 5px;}
-.fl-shotcode{position:absolute;bottom:5px;left:6px;font-size:9px;color:#fff;
-  text-shadow:0 1px 3px rgba(0,0,0,.75);letter-spacing:.06em;}
-.fl-shotcode-plain{color:var(--metal);text-shadow:none;}
-
-.fl-empty{border:1px dashed var(--line);border-radius:12px;padding:28px 20px;text-align:center;}
-.fl-emptytitle{font-size:15px;font-weight:500;margin:0 0 6px;color:var(--fg);}
-.fl-emptybody{font-size:13px;color:var(--fg2);margin:0;line-height:1.5;}
-
-.fl-fab{position:fixed;bottom:max(20px,calc(env(safe-area-inset-bottom) + 12px));
-  left:50%;transform:translateX(-50%);
-  background:var(--green);color:var(--onaccent);border:none;border-radius:999px;
-  padding:13px 24px;font-size:14px;font-weight:600;letter-spacing:-.01em;
-  box-shadow:0 6px 24px rgba(62,207,116,.32);z-index:40;}
-.fl-fabplus{font-family:var(--mono);margin-right:4px;}
-
-/* form */
-.fl-form{min-height:100vh;background:var(--bg);}
-.fl-formhead{position:sticky;top:0;z-index:30;display:flex;align-items:center;
-  justify-content:space-between;gap:10px;
-  padding:max(12px,env(safe-area-inset-top)) 16px 12px;
-  background:var(--bg);border-bottom:1px solid var(--line);}
-.fl-back{background:none;border:none;font-size:14px;color:var(--fg2);padding:4px 0;}
-.fl-code{font-family:var(--mono);font-size:10px;color:var(--metal);letter-spacing:.06em;}
-.fl-save{background:var(--green);color:var(--onaccent);border:none;border-radius:999px;
-  padding:8px 18px;font-size:13px;font-weight:600;}
-.fl-save:disabled{opacity:.45;}
-.fl-formbody{padding:14px 16px 0;display:flex;flex-direction:column;gap:14px;}
-.fl-sec{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px;}
-.fl-sechead{display:flex;justify-content:space-between;align-items:center;margin-bottom:11px;}
-.fl-sechead .fl-label{font-size:10.5px;color:var(--fg);}
-.fl-field{display:block;margin-bottom:10px;}
-.fl-field:last-child{margin-bottom:0;}
-.fl-field .fl-label{margin-bottom:5px;}
-.fl-in{width:100%;border:1px solid var(--line);border-radius:8px;background:var(--surface2);
-  padding:10px 11px;font-size:15px;font-family:var(--sans);color:var(--fg);}
-.fl-in::placeholder{color:var(--placeholder);}
-.fl-in.fl-mono{font-family:var(--mono);}
-.fl-area{resize:vertical;line-height:1.45;font-size:14px;margin-top:10px;}
-.fl-two{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-.fl-three{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
-.fl-two .fl-field,.fl-three .fl-field{margin-bottom:10px;}
-.fl-toggle{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--fg);
-  padding:4px 0;cursor:pointer;}
-.fl-toggle input{width:18px;height:18px;flex:0 0 18px;accent-color:var(--green);}
-
-.fl-seg{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;
-  background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:4px;}
-.fl-segbtn{border:none;background:transparent;color:var(--fg2);border-radius:7px;
-  padding:8px 2px;font-size:11.5px;font-family:var(--mono);letter-spacing:.02em;}
-.fl-segon{background:var(--green);color:var(--onaccent);font-weight:600;}
-.fl-segbody{margin-top:13px;}
-
-.fl-photos{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;}
-.fl-photo{aspect-ratio:1;border-radius:8px;overflow:hidden;border:1px solid var(--line);
-  padding:0;background:var(--surface2);}
-.fl-photo img{width:100%;height:100%;object-fit:cover;display:block;}
-.fl-photoadd{border:1px dashed var(--greendeep);background:rgba(62,207,116,.08);
-  color:var(--green);font-size:20px;font-family:var(--mono);}
-
-.fl-kids{display:flex;flex-direction:column;gap:6px;margin-bottom:11px;}
-.fl-kid{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
-  background:var(--surface2);border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--fg);}
-.fl-kdot{width:7px;height:7px;border-radius:999px;flex:0 0 7px;}
-.fl-kname{flex:1;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.fl-addpart{width:100%;border:1px dashed var(--greendeep);background:rgba(62,207,116,.08);
-  color:var(--green);border-radius:9px;padding:10px;font-size:13px;}
-.fl-lotnet{display:flex;justify-content:space-between;align-items:baseline;
-  margin-top:12px;padding-top:11px;border-top:1px solid var(--line);}
-.fl-lotnet .fl-mono{font-size:15px;}
-
-.fl-months{display:flex;flex-direction:column;gap:9px;}
-.fl-month{background:var(--surface);border:1px solid var(--line);border-radius:11px;
-  padding:11px 12px 10px;}
-.fl-monthtop{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
-.fl-monthname{font-size:14px;font-weight:500;letter-spacing:-.01em;color:var(--fg);}
-.fl-monthprofit{font-size:15px;font-weight:600;letter-spacing:-.02em;}
-/* bar is proportional to the best month, so the shape is comparative
-   rather than absolute; hidden from screen readers since the figures
-   above already carry the same information */
-.fl-monthbar{height:4px;border-radius:999px;background:var(--surface2);
-  margin:9px 0 8px;overflow:hidden;}
-.fl-monthfill{display:block;height:100%;border-radius:999px;background:var(--green);}
-.fl-monthfillneg{background:var(--loss);}
-.fl-espnote{margin:9px 0 0;}
-.fl-esp{color:var(--amber);}
-.fl-monthfoot{display:flex;gap:12px;font-size:10.5px;color:var(--fg2);flex-wrap:wrap;}
-@media (min-width:820px){
-  .fl-months{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
-}
-@media (min-width:1180px){
-  .fl-months{grid-template-columns:repeat(3,minmax(0,1fr));}
-}
-
-.fl-ledger{background:var(--surface);border:1px solid rgba(62,207,116,.28);border-radius:12px;
-  padding:14px 15px;color:var(--fg);box-shadow:0 0 18px rgba(62,207,116,.10);}
-.fl-lrow{display:flex;justify-content:space-between;align-items:baseline;padding:4px 0;}
-.fl-lrow .fl-mono{font-size:14px;}
-.fl-lrowbig .fl-mono{font-size:22px;letter-spacing:-.02em;}
-.fl-ledgerline{height:1px;background:var(--line);margin:8px 0;}
-
-.fl-btnrow{display:flex;gap:9px;flex-wrap:wrap;}
-.fl-btn{flex:1;min-width:130px;border:1px solid var(--line);background:var(--surface2);
-  color:var(--fg);border-radius:9px;padding:11px;font-size:13px;}
-.fl-btnprimary{background:var(--green);border-color:var(--green);color:var(--onaccent);font-weight:600;}
-.fl-btn:disabled{opacity:.5;}
-
-.fl-danger{display:flex;gap:9px;margin-top:2px;}
-.fl-del,.fl-cancel{flex:1;background:transparent;border:1px solid var(--line);
-  border-radius:9px;padding:11px;font-size:13px;color:var(--fg2);}
-.fl-delconfirm{flex:1;background:var(--red);border:none;border-radius:9px;padding:11px;
-  font-size:13px;font-weight:600;color:#fff;}
-
-.fl-viewer{position:fixed;inset:0;background:rgba(6,8,9,.95);z-index:60;
-  display:flex;align-items:center;justify-content:center;padding:16px;}
-.fl-viewer img{max-width:100%;max-height:78vh;border-radius:10px;}
-.fl-viewerbar{position:absolute;bottom:22px;left:0;right:0;display:flex;justify-content:center;gap:10px;}
-.fl-vbtn{background:rgba(255,255,255,.13);border:none;color:#fff;border-radius:999px;
-  padding:10px 18px;font-size:15px;}
-.fl-vdel{font-size:13px;}
-
-.fl-toast{position:fixed;bottom:max(82px,calc(env(safe-area-inset-bottom) + 74px));
-  left:50%;transform:translateX(-50%);
-  background:var(--green);color:var(--onaccent);padding:9px 16px;border-radius:999px;
-  font-size:12px;font-weight:600;z-index:70;}
-
-/* ------------------------------------------------------------------ */
-/* responsive: phone-first, then widen the shell and let the list       */
-/* become a grid. Cards are self-contained tiles, so columns are the    */
-/* natural use of a desktop viewport rather than a wider single file.   */
-/* ------------------------------------------------------------------ */
-
-/* small phones: reclaim horizontal space */
-@media (max-width:400px){
-  .fl-head{padding:14px 12px 0;}
-  .fl-list{padding:10px 12px 0;}
-  .fl-stats{gap:8px;}
-  .fl-statval{font-size:20px;}
-  .fl-shot{flex:0 0 68px;width:68px;}
-  .fl-sort{flex:0 0 96px;}
-  .fl-name{font-size:14px;}
-}
-
-/* large phones and up: a touch more air */
-@media (min-width:560px){
-  .fl-shell{--shell:600px;}
-  .fl-head{padding:22px 20px 0;}
-  .fl-list{padding:14px 20px 0;}
-}
-
-/* tablets: two columns, and the stats can breathe */
-@media (min-width:820px){
-  .fl-shell{--shell:820px;}
-  .fl-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
-    align-items:stretch;gap:10px;}
-  /* names clamp to one line in grid mode, so rows stay even */
-  .fl-list .fl-name{-webkit-line-clamp:1;min-height:0;}
-  .fl-list .fl-card{height:100%;}
-  .fl-stats{grid-template-columns:repeat(2,minmax(0,1fr));}
-  .fl-run{height:38px;}
-  /* the reveal cascades across the grid, so keep it short */
-  .fl-list>*{animation-duration:.28s;}
-}
-
-/* desktop: three columns and a wider shell */
-@media (min-width:1180px){
-  .fl-shell{--shell:1180px;}
-  .fl-list{grid-template-columns:repeat(3,minmax(0,1fr));gap:11px;}
-  .fl-head{padding:26px 24px 0;}
-  .fl-list{padding:16px 24px 0;}
-  .fl-statval{font-size:26px;}
-  .fl-run{height:44px;}
-}
-
-/* very wide: cap the columns so cards never stretch into letterboxes */
-@media (min-width:1500px){
-  .fl-shell{--shell:1420px;}
-  .fl-list{grid-template-columns:repeat(4,minmax(0,1fr));}
-}
-
-/* on desktop the add button belongs near the cursor, not floating
-   in the middle of a wide viewport */
-@media (min-width:820px){
-  .fl-fab{left:auto;right:calc(50% - var(--shell,540px)/2 + 24px);
-    transform:none;bottom:max(26px,calc(env(safe-area-inset-bottom) + 18px));}
-  .fl-fab:hover{filter:brightness(1.06);}
-}
-
-/* touch: keep the pills visually small but give thumbs a real target
-   via a transparent inset, rather than inflating the header */
-@media (hover:none){
-  .fl-icon,.fl-chip{position:relative;}
-  .fl-icon::after,.fl-chip::after{content:"";position:absolute;
-    inset:-9px -4px;border-radius:999px;}
-}
-
-/* pointer-driven screens get a real hover lift; touch keeps it flat */
-@media (hover:hover) and (pointer:fine){
-  .fl-card{transition:background .16s ease, border-color .16s ease,
-    transform .16s ease, box-shadow .16s ease;}
-  .fl-card:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,0,0,.45);}
-}
-
-@media (prefers-reduced-motion:reduce){.fl-shell *{transition:none !important;animation:none !important;}}
-`}</style>
   );
 }

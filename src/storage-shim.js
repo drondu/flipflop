@@ -11,4 +11,8 @@ export const localStorageShim = {
   async delete(key) {
     localStorage.removeItem(key);
   },
+  /* nothing external can change localStorage from another device */
+  subscribe() {
+    return () => {};
+  },
 };
