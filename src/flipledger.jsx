@@ -612,7 +612,7 @@ function Card({ it, cur, thumb, parent, childCount, onOpen }) {
   const stale = isOpen(it) && days !== null && days > 60;
 
   return (
-    <button className={`fl-card fl-c-${st}`} onClick={onOpen}>
+    <button className={`fl-card fl-c-${st}` + (stale ? " fl-stale" : "") + (thumb ? " fl-has-photo" : "")} onClick={onOpen}>
       <span className={`fl-strip fl-s-${st}`} />
       <span className="fl-cardbody">
         <span className="fl-cardtop">

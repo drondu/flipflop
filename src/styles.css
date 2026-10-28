@@ -60,6 +60,9 @@ html,body{background:#0B0E10;}
 .fl-stat::before{content:"";position:absolute;inset:0 0 auto 0;height:2px;
   background:linear-gradient(90deg,var(--amber),rgba(224,163,58,0));opacity:.75;}
 .fl-stat:nth-child(2)::before{background:linear-gradient(90deg,var(--green),rgba(62,207,116,0));}
+/* subtle inner glow on the stat area to give numbers weight */
+.fl-stat::after{content:"";position:absolute;inset:0;background:linear-gradient(
+  180deg,transparent,rgba(255,255,255,.02));pointer-events:none;border-radius:12px;}
 .fl-statval{display:block;font-family:var(--mono);font-size:23px;font-weight:500;
   letter-spacing:-.035em;margin-top:7px;font-variant-numeric:tabular-nums;color:var(--fg);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -117,11 +120,24 @@ html,body{background:#0B0E10;}
 .fl-list>*:nth-child(n+8){animation-delay:.18s}
 /* Only open positions glow. Everything closed recedes, so the eye lands
    on what still needs selling instead of on 239 identical slabs. */
+/* Cards: a subtle gradient background for holding items, amber glow on stale
+   cards, and a stronger photo presence on cards that have images. */
 .fl-card{display:flex;width:100%;text-align:left;background:var(--card);color:var(--ink);
   border:1px solid var(--line);border-radius:11px;overflow:hidden;padding:0;
   box-shadow:0 1px 2px rgba(0,0,0,.4);
   transition:background .16s ease, border-color .16s ease, transform .12s ease;}
-.fl-card.fl-c-holding{background:var(--cardhi);border-color:rgba(224,163,58,.34);}
+.fl-card.fl-c-holding{background:linear-gradient(180deg,rgba(224,163,58,.06),var(--card));
+  border-color:rgba(224,163,58,.25);}
+/* Stale: amber inner glow + a subtle badge icon. */
+.fl-card.fl-c-holding.fl-stale{
+  position:relative;overflow:visible;
+  box-shadow:0 0 0 1px rgba(224,163,58,.18),0 1px 2px rgba(0,0,0,.4);
+}
+.fl-card.fl-c-holding.fl-stale::before{content:"⚠";position:absolute;top:8px;left:16px;
+  font-size:10px;color:var(--amber);font-weight:600;font-family:var(--sans);
+  background:rgba(224,163,58,.12);border:1px solid rgba(224,163,58,.3);
+  border-radius:4px;padding:1px 5px;z-index:2;pointer-events:none;}
+.fl-card.fl-c-holding.fl-stale .fl-strip{background:linear-gradient(180deg,var(--amber),rgba(224,163,58,.3));}
 .fl-card:hover{background:var(--cardhi);border-color:var(--line2);}
 .fl-card.fl-c-holding:hover{border-color:rgba(224,163,58,.55);}
 .fl-card:active{transform:scale(.995);}
@@ -166,6 +182,8 @@ html,body{background:#0B0E10;}
 
 .fl-shot{position:relative;flex:0 0 84px;width:84px;align-self:stretch;background:rgba(0,0,0,.14);
   display:flex;align-items:center;justify-content:center;border-left:1px solid rgba(255,255,255,.04);overflow:hidden;}
+/* When a card has a photo, make the thumbnail more prominent (slightly larger) */
+.fl-card.fl-has-photo .fl-shot{flex:0 0 100px;width:100px;background:rgba(0,0,0,.08);}
 .fl-shot img{width:100%;height:100%;object-fit:cover;display:block;}
 .fl-shotempty{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#808B91;}
 .fl-shotcount{position:absolute;top:6px;right:6px;background:rgba(14,17,19,.78);color:#fff;
@@ -174,7 +192,9 @@ html,body{background:#0B0E10;}
   text-shadow:0 1px 3px rgba(0,0,0,.75);letter-spacing:.06em;}
 .fl-shotcode-plain{color:var(--metal);text-shadow:none;}
 
-.fl-empty{border:1px dashed var(--line);border-radius:12px;padding:28px 20px;text-align:center;}
+.fl-empty{border:1px dashed var(--line);border-radius:12px;padding:28px 20px;text-align:center;
+  /* subtle icon to make the empty state feel intentional, not dead */}
+.fl-empty::before{content:"📦";font-size:28px;display:block;margin-bottom:8px;opacity:.6;}
 .fl-emptytitle{font-size:15px;font-weight:500;margin:0 0 6px;color:var(--fg);}
 .fl-emptybody{font-size:13px;color:var(--fg2);margin:0;line-height:1.5;}
 
@@ -194,8 +214,10 @@ html,body{background:#0B0E10;}
 .fl-back{background:none;border:none;font-size:14px;color:var(--fg2);padding:4px 0;}
 .fl-code{font-family:var(--mono);font-size:10px;color:var(--metal);letter-spacing:.06em;}
 .fl-save{background:var(--green);color:var(--onaccent);border:none;border-radius:999px;
-  padding:8px 18px;font-size:13px;font-weight:600;}
-.fl-save:disabled{opacity:.45;}
+  padding:8px 18px;font-size:13px;font-weight:600;
+  transition:transform .1s ease, box-shadow .1s ease;}
+.fl-save:active{transform:scale(.96);box-shadow:0 0 0 2px rgba(62,207,116,.3);}
+.fl-save:disabled{opacity:.45;cursor:not-allowed;}
 .fl-formbody{padding:14px 16px 0;display:flex;flex-direction:column;gap:14px;}
 .fl-sec{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px;}
 .fl-sechead{display:flex;justify-content:space-between;align-items:center;margin-bottom:11px;}
@@ -204,8 +226,13 @@ html,body{background:#0B0E10;}
 .fl-field:last-child{margin-bottom:0;}
 .fl-field .fl-label{margin-bottom:5px;}
 .fl-in{width:100%;border:1px solid var(--line);border-radius:8px;background:var(--surface2);
-  padding:10px 11px;font-size:15px;font-family:var(--sans);color:var(--fg);}
+  padding:10px 11px;font-size:15px;font-family:var(--sans);color:var(--fg);
+  transition:border-color .15s ease, box-shadow .15s ease, background .15s ease;}
 .fl-in::placeholder{color:var(--placeholder);}
+.fl-in.fl-mono{font-family:var(--mono);}
+/* Focus: a subtle green glow instead of just an outline, plus slightly lighter bg */
+.fl-in:focus{outline:none;border-color:var(--green);box-shadow:0 0 0 3px rgba(62,207,116,.15),
+  inset 0 0 0 1px var(--green);background:var(--surface);}
 .fl-in.fl-mono{font-family:var(--mono);}
 .fl-area{resize:vertical;line-height:1.45;font-size:14px;margin-top:10px;}
 .fl-two{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
@@ -249,10 +276,12 @@ html,body{background:#0B0E10;}
 /* bar is proportional to the best month, so the shape is comparative
    rather than absolute; hidden from screen readers since the figures
    above already carry the same information */
-.fl-monthbar{height:4px;border-radius:999px;background:var(--surface2);
-  margin:9px 0 8px;overflow:hidden;}
-.fl-monthfill{display:block;height:100%;border-radius:999px;background:var(--green);}
-.fl-monthfillneg{background:var(--loss);}
+.fl-monthbar{height:5px;border-radius:999px;background:var(--surface2);
+  margin:9px 0 8px;overflow:hidden;position:relative;}
+.fl-monthfill{display:block;height:100%;border-radius:999px;
+  /* subtle gradient gives bars visual depth */
+  background:linear-gradient(90deg,var(--green),rgba(74,219,130,.85));}
+.fl-monthfillneg{background:linear-gradient(90deg,var(--loss),rgba(255,134,114,.85));}
 .fl-espnote{margin:9px 0 0;}
 .fl-esp{color:var(--amber);}
 .fl-monthfoot{display:flex;gap:12px;font-size:10.5px;color:var(--fg2);flex-wrap:wrap;}
@@ -372,6 +401,11 @@ html,body{background:#0B0E10;}
   .fl-card{transition:background .16s ease, border-color .16s ease,
     transform .16s ease, box-shadow .16s ease;}
   .fl-card:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,0,0,.45);}
+  /* stale cards: hover amplifies the amber glow */
+  .fl-card.fl-c-holding.fl-stale:hover{
+    box-shadow:0 0 0 1px rgba(224,163,58,.35),0 6px 18px rgba(0,0,0,.45);
+    transform:translateY(-1px);
+  }
 }
 
 @media (prefers-reduced-motion:reduce){.fl-shell *{transition:none !important;animation:none !important;}}
