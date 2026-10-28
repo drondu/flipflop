@@ -106,13 +106,20 @@ export default function Root() {
     return () => { alive = false; };
   }, [phase, session, primeTick]);
 
-  /* The browser fires "online" when connectivity returns — that is the
-     moment to re-prime and push whatever was written offline. */
+  /* The browser fires "online" when connectivity returns — debounce to 2s
+     to avoid multiple re-primes during a network transition. */
   useEffect(() => {
     if (!isConfigured || !session) return;
-    const on = () => setPrimeTick((n) => n + 1);
+    let timer = null;
+    const on = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setPrimeTick((n) => n + 1), 2000);
+    };
     window.addEventListener("online", on);
-    return () => window.removeEventListener("online", on);
+    return () => {
+      window.removeEventListener("online", on);
+      if (timer) clearTimeout(timer);
+    };
   }, [isConfigured, session]);
 
   /* Surface writes that could not reach the cloud. */
@@ -124,7 +131,15 @@ export default function Root() {
     [isConfigured]
   );
 
-  if (phase === "loading" || phase === "priming") return <Splash label="Loading…" />;
+  if (phase === "loading" || phase === "priming")
+    return (
+      <Splash label="Loading…">
+        <button onClick={() => setPhase("priming")}
+          style={{ marginTop: 16, padding: "8px 16px", borderRadius: 8,
+            border: "none", background: "#3ECF74", color: "#0E1113",
+            fontWeight: 600, cursor: "pointer" }}>Retry</button>
+      </Splash>
+    );
   if (phase === "error")
     return (
       <Splash label="Could not reach the server.">

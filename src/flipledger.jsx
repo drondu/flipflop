@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { Section, Field, Row } from "./ui.jsx";
 import "./styles.css";
 
 /* ------------------------------------------------------------------ */
@@ -27,16 +28,38 @@ async function sDel(key) {
 }
 
 /* Card thumbnails live in the per-item photos keys, not in the items row:
-   a 240px JPEG per item would bloat the single items blob many times over. */
+   a 240px JPEG per item would bloat the single items blob many times over.
+   When batchGet is available (cloud), all photos are fetched in a single
+   query; otherwise individual sGet calls are used (local/shim). */
 async function thumbMapFor(list) {
   const map = {};
-  await Promise.all(
-    list.filter((it) => it.photoCount > 0).map(async (it) => {
-      const p = await sGet(kPhotos(it.id), []);
-      const first = Array.isArray(p) && p[0];
-      if (first && first.thumb) map[it.id] = first.thumb;
-    })
-  );
+  const keys = list.filter((it) => it.photoCount > 0).map((it) => kPhotos(it.id));
+  if (keys.length === 0) return map;
+  const prefix = kPhotos("");
+
+  const batch = window.storage.batchGet;
+  if (batch) {
+    /* Cloud: single query for all photos. */
+    const results = await batch(keys);
+    const prefix = kPhotos("");
+    for (const row of results || []) {
+      if (!row.key) continue;
+      try {
+        const p = JSON.parse(row.value);
+        const first = Array.isArray(p) && p[0];
+        if (first && first.thumb) map[row.key.slice(prefix.length)] = first.thumb;
+      } catch { /* skip corrupt */ }
+    }
+  } else {
+    /* Legacy/local: individual calls (no batching available). */
+    await Promise.all(
+      keys.map(async (key) => {
+        const p = await sGet(key, []);
+        const first = Array.isArray(p) && p[0];
+        if (first && first.thumb) map[key.slice(prefix.length)] = first.thumb;
+      })
+    );
+  }
   return map;
 }
 
@@ -177,8 +200,9 @@ const normalise = (it) => ({
   esp: "",
   parentId: null,
   lot: false,
-  /* last-write-wins stamp for merges; 0 sorts oldest records first */
-  updated: 0,
+  /* last-write-wins stamp: Date.now() so old records aren't treated
+     as ancient (updated: 0 would clobber newer cloud rows in LWW). */
+  updated: Date.now(),
   ...it,
 });
 
@@ -380,6 +404,12 @@ export default function App({ onSignOut }) {
             items={items}
             cloud={Boolean(onSignOut)}
             onBack={() => setView({ name: "list" })}
+            onClear={() => {
+              setItems([]);
+              setThumbs({});
+              sSet(K_ITEMS, []).catch(() => {});
+              flash("Ledger cleared");
+            }}
             onRestore={async (payload, mode) => {
               const list = (payload.items || []).map(normalise);
               for (const it of list) {
@@ -1223,9 +1253,10 @@ function MonthsView({ items, cur, onBack }) {
 /* ------------------------------------------------------------------ */
 /* backup / restore                                                     */
 /* ------------------------------------------------------------------ */
-function DataView({ items, cloud, onBack, onRestore, flash }) {
+function DataView({ items, cloud, onBack, onRestore, onClear, flash }) {
   const [working, setWorking] = useState(false);
   const [paste, setPaste] = useState("");
+  const [clearing, setClearing] = useState(false);
   const fileRef = useRef(null);
   const pendingMode = useRef("merge");
 
@@ -1368,6 +1399,25 @@ function DataView({ items, cloud, onBack, onRestore, flash }) {
             </div>
           )}
         </Section>
+        {items.length > 0 && (
+          <Section title="Danger zone">
+            {clearing ? (
+              <div className="fl-btnrow">
+                <p className="fl-warn" style={{ flex: 1 }}>
+                  Delete all {items.length} items. This cannot be undone.
+                </p>
+                <button className="fl-btn" onClick={onClear}
+                  style={{ background: "#c0392b", color: "#fff" }}>Confirm clear</button>
+                <button className="fl-btn" onClick={() => setClearing(false)}>Cancel</button>
+              </div>
+            ) : (
+              <button className="fl-btn" onClick={() => setClearing(true)}
+                style={{ background: "#c0392b", color: "#fff" }}>
+                Clear ledger
+              </button>
+            )}
+          </Section>
+        )}
         <div className="fl-spacer" />
       </div>
     </div>
@@ -1375,34 +1425,5 @@ function DataView({ items, cloud, onBack, onRestore, flash }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* bits                                                                 */
+/* bits (moved to src/ui.js)                                            */
 /* ------------------------------------------------------------------ */
-function Section({ title, note, children }) {
-  return (
-    <section className="fl-sec">
-      <div className="fl-sechead">
-        <h2 className="fl-label">{title}</h2>
-        {note && <span className="fl-mono fl-dim fl-small">{note}</span>}
-      </div>
-      {children}
-    </section>
-  );
-}
-function Field({ label, children }) {
-  return (
-    <label className="fl-field">
-      <span className="fl-label">{label}</span>
-      {children}
-    </label>
-  );
-}
-function Row({ label, value, tone, big }) {
-  return (
-    <div className={"fl-lrow" + (big ? " fl-lrowbig" : "")}>
-      <span className="fl-label">{label}</span>
-      <span className={"fl-mono fl-strong " + (tone === "gain" ? "fl-gain" : tone === "loss" ? "fl-loss" : "")}>
-        {value}
-      </span>
-    </div>
-  );
-}

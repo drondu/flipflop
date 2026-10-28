@@ -15,4 +15,9 @@ export const localStorageShim = {
   subscribe() {
     return () => {};
   },
+  /* batch-get: no-op for the shim, returns nothing (thumbMapFor falls back
+     to individual sGet calls). */
+  batchGet() {
+    return Promise.resolve([]);
+  },
 };

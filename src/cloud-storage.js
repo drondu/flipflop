@@ -211,14 +211,27 @@ export async function primeCache(uid) {
   return true;
 }
 
-export const cloudStorage = {
-  async get(key) {
-    const entry = cache.get(key);
-    if (entry) return { value: entry.value };
-    return shadowGet(key); // offline: serve the unconfirmed local copy
-  },
+  /* Batch-fetch values for a list of keys. Used by thumbMapFor to load
+     multiple photos in a single query. */
+  async function batchGet(keys) {
+    if (!userId || keys.length === 0) return [];
+    const { data, error } = await supabase
+      .from("kv")
+      .select("key,value")
+      .eq("user_id", userId)
+      .in("key", keys);
+    if (error) return [];
+    return data || [];
+  }
 
-  async set(key, value) {
+  export const cloudStorage = {
+    async get(key) {
+      const entry = cache.get(key);
+      if (entry) return { value: entry.value };
+      return shadowGet(key); // offline: serve the unconfirmed local copy
+    },
+
+    async set(key, value) {
     const at = new Date().toISOString();
     cache.set(key, { value, at });
     shadowSet(key, value);
@@ -239,5 +252,6 @@ export const cloudStorage = {
     return flush(key);
   },
 
-  subscribe,
-};
+    subscribe,
+    batchGet,
+  };
