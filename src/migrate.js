@@ -1,4 +1,4 @@
-import { cloudStorage } from "./cloud-storage.js";
+import { cloudStorage, batchGet } from "./cloud-storage.js";
 
 /* One-time move of pre-Supabase localStorage data into the cloud account.
    Runs after the cache is primed, so it can tell an empty account from a
@@ -69,14 +69,26 @@ export async function migrateLocalToCloud(userId) {
     await cloudStorage.set(K_SET, JSON.stringify(localSettings));
   }
 
+  // Batch-check which photo keys already exist in the cloud (instead of
+  // looping 280+ sequential cloudStorage.get calls).
+  const photoKeys = localItems.filter(it => it && it.id).map(it => kPhotos(it.id));
+  const cloudPhotos = await batchGet(photoKeys);
+  const existingPhotoKeySet = new Set(
+    (cloudPhotos || []).filter(row => {
+      // Skip only if the cloud has a non-empty photo array (matching the
+      // original `there.value !== "[]"` semantics).
+      const v = row.value;
+      return Array.isArray(v) && v.length > 0;
+    }).map(row => row.key)
+  );
+
   // Photos are per-item; skip any the cloud already has.
   let photos = 0;
   for (const it of localItems) {
     if (!it || !it.id) continue;
     const local = readLocal(kPhotos(it.id));
     if (!Array.isArray(local) || local.length === 0) continue;
-    const there = await cloudStorage.get(kPhotos(it.id));
-    if (there && there.value && there.value !== "[]") continue;
+    if (existingPhotoKeySet.has(kPhotos(it.id))) continue;
     try {
       await cloudStorage.set(kPhotos(it.id), JSON.stringify(local));
       photos += local.length;

@@ -169,10 +169,14 @@ export async function primeCache(uid) {
   cache.clear();
   dirty.clear();
   failed.clear();
+  // Skip photo blobs: 280 items × 6 photos = 1680 base64 rows (megabytes).
+  // The reconcile step excludes them, so dirty/failed photos are re-flushed
+  // separately below.
   const { data, error } = await supabase
     .from("kv")
     .select("key,value,updated_at")
-    .eq("user_id", uid);
+    .eq("user_id", uid)
+    .not("key", "regex", "flip:photos:");
   if (my !== primeToken) return !error; // a newer prime superseded this one
   if (error) {
     console.warn("primeCache failed", error.message);
@@ -207,24 +211,35 @@ export async function primeCache(uid) {
     }
   }
   for (const k of [...dirty]) flush(k);
+  // Re-flush any photo keys that were dirty or failed before the prime.
+  // They were excluded from the query (to keep it small), so we must
+  // re-send them explicitly.
+  const photoDirty = [...prevDirty].filter(k => k.startsWith("flip:photos:"));
+  const photoFailed = [...prevFailed].filter(k => k.startsWith("flip:photos:"));
+  for (const k of new Set([...photoDirty, ...photoFailed])) {
+    failed.add(k);
+    flush(k);
+  }
   emit();
   return true;
 }
 
-  /* Batch-fetch values for a list of keys. Used by thumbMapFor to load
-     multiple photos in a single query. */
-  async function batchGet(keys) {
-    if (!userId || keys.length === 0) return [];
-    const { data, error } = await supabase
-      .from("kv")
-      .select("key,value")
-      .eq("user_id", userId)
-      .in("key", keys);
-    if (error) return [];
-    return data || [];
-  }
+/* Batch-fetch values for a list of keys. Used by thumbMapFor to load
+   multiple photos in a single query, and by migrateLocalToCloud to
+   batch-check which photos already exist in the cloud. */
+async function batchGet(keys) {
+  if (!userId || keys.length === 0) return [];
+  const { data, error } = await supabase
+    .from("kv")
+    .select("key,value")
+    .eq("user_id", uid)
+    .in("key", keys);
+  if (error) return [];
+  return data || [];
+}
+export { batchGet };
 
-  export const cloudStorage = {
+export const cloudStorage = {
     async get(key) {
       const entry = cache.get(key);
       if (entry) return { value: entry.value };
