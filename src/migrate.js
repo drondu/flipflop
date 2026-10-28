@@ -8,6 +8,7 @@ const K_ITEMS = "flip:items";
 const K_SET = "flip:settings";
 const DONE = "flip:migrated";
 const kPhotos = (id) => `flip:photos:${id}`;
+const kThumb = (id) => `flip:thumb:${id}`;
 
 const readLocal = (key) => {
   try {
@@ -91,6 +92,9 @@ export async function migrateLocalToCloud(userId) {
     if (existingPhotoKeySet.has(kPhotos(it.id))) continue;
     try {
       await cloudStorage.set(kPhotos(it.id), JSON.stringify(local));
+      if (local[0] && local[0].thumb) {
+        await cloudStorage.set(kThumb(it.id), JSON.stringify(local[0].thumb));
+      }
       photos += local.length;
     } catch (e) {
       console.error("photo migration failed", it.id, e);

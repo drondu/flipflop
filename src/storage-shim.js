@@ -15,9 +15,18 @@ export const localStorageShim = {
   subscribe() {
     return () => {};
   },
-  /* batch-get: no-op for the shim, returns nothing (thumbMapFor falls back
-     to individual sGet calls). */
-  batchGet() {
-    return Promise.resolve([]);
+  /* batch-get: per-key localStorage reads. Mirrors the cloud shape so
+     thumbMapFor needs no shim-specific branch. */
+  async batchGet(keys) {
+    const out = [];
+    for (const k of keys) {
+      const value = localStorage.getItem(k);
+      if (value !== null) out.push({ key: k, value });
+    }
+    return out;
+  },
+  /* batch-delete: per-key localStorage removal. */
+  async batchDelete(keys) {
+    for (const k of keys) localStorage.removeItem(k);
   },
 };

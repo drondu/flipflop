@@ -19,8 +19,8 @@ let userId = null;
 let primeToken = 0;
 
 const listeners = new Set();
-function emit() {
-  const s = { failed: failed.size };
+function emit(extra) {
+  const s = { failed: failed.size, ...extra };
   for (const cb of listeners) cb(s);
 }
 
@@ -39,6 +39,7 @@ export function subscribe(cb) {
 }
 
 const t = (s) => (s ? new Date(s).getTime() || 0 : 0);
+const isMediaKey = (k) => k.startsWith("flip:photos:") || k.startsWith("flip:thumb:");
 
 /* Shadow helpers. The shadow only ever holds keys this client wrote but
    could not confirm in the cloud, so it is small by construction. */
@@ -147,7 +148,7 @@ function flush(key) {
       if (entry) shadowSet(key, entry.value);
       else shadowDel(key); // failed delete — keep it deleted locally too
     } finally {
-      emit();
+      emit(isMediaKey(key) ? { photoOnly: true } : undefined);
     }
   });
 }
@@ -169,14 +170,14 @@ export async function primeCache(uid) {
   cache.clear();
   dirty.clear();
   failed.clear();
-  // Skip photo blobs: 280 items × 6 photos = 1680 base64 rows (megabytes).
-  // The reconcile step excludes them, so dirty/failed photos are re-flushed
-  // separately below.
+  // Skip media blobs (photos + thumbs): 280 items × 6 photos = 1680 rows
+  // (megabytes). The reconcile step excludes them, so dirty/failed media
+  // keys are re-flushed separately below.
   const { data, error } = await supabase
     .from("kv")
     .select("key,value,updated_at")
     .eq("user_id", uid)
-    .not("key", "regex", "flip:photos:");
+    .not("key", "regex", "flip:(photos|thumb):");
   if (my !== primeToken) return !error; // a newer prime superseded this one
   if (error) {
     console.warn("primeCache failed", error.message);
@@ -207,37 +208,80 @@ export async function primeCache(uid) {
   for (const [k, v] of prev) {
     if (!cache.has(k)) {
       cache.set(k, v); // created offline, not in the cloud yet
-      dirty.add(k);
+      if (isMediaKey(k)) {
+        if (prevDirty.has(k)) dirty.add(k);
+      } else {
+        dirty.add(k);
+      }
     }
   }
   for (const k of [...dirty]) flush(k);
-  // Re-flush any photo keys that were dirty or failed before the prime.
-  // They were excluded from the query (to keep it small), so we must
-  // re-send them explicitly.
-  const photoDirty = [...prevDirty].filter(k => k.startsWith("flip:photos:"));
-  const photoFailed = [...prevFailed].filter(k => k.startsWith("flip:photos:"));
-  for (const k of new Set([...photoDirty, ...photoFailed])) {
-    failed.add(k);
-    flush(k);
+  // Re-flush media keys that are dirty but absent from the cache (pending
+  // deletes). Keys that ARE in the cache (failed writes) were already
+  // re-added to dirty by the prev loop above and flushed by the loop above,
+  // so we only handle the delete case here.
+  for (const k of prevDirty) {
+    if (isMediaKey(k) && !cache.has(k)) {
+      failed.add(k);
+      flush(k);
+    }
   }
   emit();
   return true;
 }
 
 /* Batch-fetch values for a list of keys. Used by thumbMapFor to load
-   multiple photos in a single query, and by migrateLocalToCloud to
-   batch-check which photos already exist in the cloud. */
+   multiple thumbs in a single query, and by migrateLocalToCloud to
+   batch-check which photos already exist in the cloud. Chunks at 50 keys
+   to stay under Postgres URL limits. */
 async function batchGet(keys) {
   if (!userId || keys.length === 0) return [];
-  const { data, error } = await supabase
-    .from("kv")
-    .select("key,value")
-    .eq("user_id", uid)
-    .in("key", keys);
-  if (error) return [];
-  return data || [];
+  const results = [];
+  for (let i = 0; i < keys.length; i += 50) {
+    const chunk = keys.slice(i, i + 50);
+    const { data, error } = await supabase
+      .from("kv")
+      .select("key,value")
+      .eq("user_id", userId)
+      .in("key", chunk);
+    if (error) continue; // partial results are better than none
+    if (data) results.push(...data);
+  }
+  return results;
 }
-export { batchGet };
+
+/* Batch-delete keys. Used by clear-ledger to remove all photo+thumb rows
+   in a single pass. Chunks at 50. Local cache/shadow cleanup always runs;
+   cloud delete is best-effort (orphan blobs are invisible to the user). */
+async function batchDelete(keys) {
+  if (keys.length === 0) return;
+  const allMedia = keys.every(isMediaKey);
+  for (let i = 0; i < keys.length; i += 50) {
+    const chunk = keys.slice(i, i + 50);
+    for (const k of chunk) {
+      cache.delete(k);
+      shadowDel(k);
+    }
+    if (!userId) {
+      for (const k of chunk) { dirty.delete(k); failed.delete(k); }
+      continue;
+    }
+    for (const k of chunk) { dirty.add(k); failed.delete(k); }
+    try {
+      const { error } = await supabase
+        .from("kv")
+        .delete()
+        .eq("user_id", userId)
+        .in("key", chunk);
+      if (error) throw error;
+      for (const k of chunk) { dirty.delete(k); failed.delete(k); }
+    } catch {
+      for (const k of chunk) { dirty.add(k); failed.add(k); }
+    }
+  }
+  emit(allMedia ? { photoOnly: true } : undefined);
+}
+export { batchGet, batchDelete };
 
 export const cloudStorage = {
     async get(key) {
@@ -253,7 +297,7 @@ export const cloudStorage = {
     if (!userId) return;
     dirty.add(key);
     failed.delete(key);
-    emit();
+    emit(isMediaKey(key) ? { photoOnly: true } : undefined);
     return flush(key);
   },
 
@@ -263,10 +307,11 @@ export const cloudStorage = {
     if (!userId) return;
     dirty.add(key);
     failed.delete(key);
-    emit();
+    emit(isMediaKey(key) ? { photoOnly: true } : undefined);
     return flush(key);
   },
 
     subscribe,
     batchGet,
+    batchDelete,
   };

@@ -8,6 +8,7 @@ import "./styles.css";
 const K_ITEMS = "flip:items";
 const K_SET = "flip:settings";
 const kPhotos = (id) => `flip:photos:${id}`;
+const kThumb = (id) => `flip:thumb:${id}`;
 
 async function sGet(key, fallback) {
   try {
@@ -26,39 +27,54 @@ async function sDel(key) {
     /* may not exist */
   }
 }
+/* Tolerant value parser: cloud jsonb returns native JS values; shim returns
+   JSON strings. Handles all four shapes so batchGet results work in both. */
+function parseVal(v) {
+  if (v == null) return v;
+  if (typeof v === "string") {
+    try { return JSON.parse(v); } catch { return v; }
+  }
+  return v;
+}
 
-/* Card thumbnails live in the per-item photos keys, not in the items row:
-   a 240px JPEG per item would bloat the single items blob many times over.
-   When batchGet is available (cloud), all photos are fetched in a single
-   query; otherwise individual sGet calls are used (local/shim). */
+/* Card thumbnails: a small (240px) JPEG per item in its own flip:thumb:{id}
+   key.  The old design batch-read every flip:photos: row (200–550 KB each)
+   just to grab the first photo's thumb — 280 items meant 100–300 MB.
+   A dedicated thumb key is ~25 KB, so the whole map is ~7 MB.
+   Self-heal: if a thumb key is missing we fall back to the photos row
+   and re-write the thumb. */
 async function thumbMapFor(list) {
   const map = {};
-  const keys = list.filter((it) => it.photoCount > 0).map((it) => kPhotos(it.id));
-  if (keys.length === 0) return map;
-  const prefix = kPhotos("");
-
-  const batch = window.storage.batchGet;
-  if (batch) {
-    /* Cloud: single query for all photos. */
-    const results = await batch(keys);
-    const prefix = kPhotos("");
-    for (const row of results || []) {
+  const withPhotos = list.filter((it) => it.photoCount > 0);
+  if (withPhotos.length === 0) return map;
+  const tPrefix = kThumb("");
+  const results = await window.storage.batchGet(withPhotos.map((it) => kThumb(it.id)));
+  const seen = new Set();
+  for (const row of results || []) {
+    if (!row.key) continue;
+    seen.add(row.key);
+    const id = row.key.slice(tPrefix.length);
+    const t = parseVal(row.value);
+    if (typeof t === "string" && t) map[id] = t;
+  }
+  /* Self-heal: items whose thumb key is missing → fall back to the
+     photos row, extract the first photo's thumb, write it back. */
+  const missing = withPhotos.filter((it) => !seen.has(kThumb(it.id)));
+  if (missing.length > 0) {
+    const pPrefix = kPhotos("");
+    const pResults = await window.storage.batchGet(missing.map((it) => kPhotos(it.id)));
+    for (const row of pResults || []) {
       if (!row.key) continue;
+      const id = row.key.slice(pPrefix.length);
       try {
-        const p = JSON.parse(row.value);
+        const p = parseVal(row.value);
         const first = Array.isArray(p) && p[0];
-        if (first && first.thumb) map[row.key.slice(prefix.length)] = first.thumb;
+        if (first && first.thumb) {
+          map[id] = first.thumb;
+          sSet(kThumb(id), first.thumb).catch(() => {});
+        }
       } catch { /* skip corrupt */ }
     }
-  } else {
-    /* Legacy/local: individual calls (no batching available). */
-    await Promise.all(
-      keys.map(async (key) => {
-        const p = await sGet(key, []);
-        const first = Array.isArray(p) && p[0];
-        if (first && first.thumb) map[key.slice(prefix.length)] = first.thumb;
-      })
-    );
   }
   return map;
 }
@@ -220,31 +236,46 @@ export default function App({ onSignOut }) {
   const [sort, setSort] = useState("new");
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
+  const thumbToken = useRef(0);
+  const reloadTimer = useRef(null);
+
+  const loadThumbs = useCallback(async (list) => {
+    const token = ++thumbToken.current;
+    const m = await thumbMapFor(list);
+    if (token === thumbToken.current) setThumbs(m);
+  }, []);
 
   const reload = useCallback(async () => {
     const [i, s] = await Promise.all([sGet(K_ITEMS, []), sGet(K_SET, {})]);
     const list = (Array.isArray(i) ? i : []).map(normalise);
     setItems(list);
     setSettings({ currency: s && s.currency === "EUR" ? "EUR" : "RON" });
-    setThumbs(await thumbMapFor(list));
-  }, []);
+    loadThumbs(list);
+  }, [loadThumbs]);
 
   useEffect(() => {
     let alive = true;
     reload().then(() => alive && setReady(true));
     /* The storage layer notifies when its cache changes under us (a
        re-prime after the network returns, a newer row from another
-       device) — pick the change up without a full remount. */
+       device) — pick the change up without a full remount.
+       photoOnly events (thumb re-writes) are skipped: the code that
+       triggered them already updated thumbs state directly.
+       A 250 ms debounce coalesces bursts of events. */
     const un =
       window.storage && window.storage.subscribe
-        ? window.storage.subscribe(() => {
-            if (alive) reload();
+        ? window.storage.subscribe((s) => {
+            if (!alive) return;
+            if (s && s.photoOnly) return;
+            if (reloadTimer.current) clearTimeout(reloadTimer.current);
+            reloadTimer.current = setTimeout(() => reload(), 250);
           })
         : null;
     return () => {
       alive = false;
       if (un) un();
       if (toastTimer.current) clearTimeout(toastTimer.current);
+      if (reloadTimer.current) clearTimeout(reloadTimer.current);
     };
   }, [reload]);
 
@@ -363,6 +394,9 @@ export default function App({ onSignOut }) {
                 flash("Photos too large to save");
                 return;
               }
+              if (photos[0] && photos[0].thumb) {
+                sSet(kThumb(item.id), photos[0].thumb).catch(() => {});
+              }
               await persist(
                 isNew ? [...items, item] : items.map((i) => (i.id === item.id ? item : i))
               );
@@ -375,6 +409,7 @@ export default function App({ onSignOut }) {
             }}
             onDelete={async (id) => {
               await sDel(kPhotos(id));
+              sDel(kThumb(id)).catch(() => {});
               await persist(
                 items
                   .filter((i) => i.id !== id)
@@ -404,7 +439,9 @@ export default function App({ onSignOut }) {
             items={items}
             cloud={Boolean(onSignOut)}
             onBack={() => setView({ name: "list" })}
-            onClear={() => {
+            onClear={async () => {
+              const keys = items.flatMap((it) => [kPhotos(it.id), kThumb(it.id)]);
+              if (keys.length) window.storage.batchDelete(keys).catch(() => {});
               setItems([]);
               setThumbs({});
               sSet(K_ITEMS, []).catch(() => {});
@@ -414,12 +451,20 @@ export default function App({ onSignOut }) {
               const list = (payload.items || []).map(normalise);
               for (const it of list) {
                 const p = payload.photos && payload.photos[it.id];
-                if (p) await sSet(kPhotos(it.id), p);
+                if (p) {
+                  await sSet(kPhotos(it.id), p);
+                  if (p[0] && p[0].thumb) sSet(kThumb(it.id), p[0].thumb).catch(() => {});
+                }
               }
               if (mode === "replace") {
-                /* drop photo blobs for items the restore removes */
+                /* drop photo + thumb blobs for items the restore removes */
                 const keep = new Set(list.map((it) => it.id));
-                for (const it of items) if (!keep.has(it.id)) await sDel(kPhotos(it.id));
+                for (const it of items) {
+                  if (!keep.has(it.id)) {
+                    await sDel(kPhotos(it.id));
+                    sDel(kThumb(it.id)).catch(() => {});
+                  }
+                }
               }
               let next = list;
               let added = list.length;
@@ -433,7 +478,7 @@ export default function App({ onSignOut }) {
                 next = [...byId.values()];
               }
               await persist(next);
-              setThumbs(await thumbMapFor(next));
+              loadThumbs(next);
               setView({ name: "list" });
               flash(
                 mode === "merge"
@@ -1263,7 +1308,13 @@ function DataView({ items, cloud, onBack, onRestore, onClear, flash }) {
   const buildPayload = async (withPhotos) => {
     const photos = {};
     if (withPhotos) {
-      for (const it of items) photos[it.id] = await sGet(kPhotos(it.id), []);
+      const keys = items.map((it) => kPhotos(it.id));
+      const results = await window.storage.batchGet(keys);
+      const prefix = kPhotos("");
+      for (const row of results || []) {
+        if (!row.key) continue;
+        photos[row.key.slice(prefix.length)] = parseVal(row.value) || [];
+      }
     }
     return { app: "flipledger", v: 2, at: new Date().toISOString(), items, photos };
   };
