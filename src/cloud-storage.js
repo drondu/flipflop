@@ -17,6 +17,10 @@ const dirty = new Set(); // keys with a write not yet confirmed in the cloud
 const failed = new Set(); // keys whose last flush errored (awaiting retry)
 let userId = null;
 let primeToken = 0;
+/* True once this session has a confirmed view of the cloud (a successful
+   prime). While false, the in-memory ledger may be a stale/partial local
+   copy, so it must never overwrite the cloud ledger row (see flush). */
+let primedOk = false;
 
 const listeners = new Set();
 function emit(extra) {
@@ -40,6 +44,39 @@ export function subscribe(cb) {
 
 const t = (s) => (s ? new Date(s).getTime() || 0 : 0);
 const isMediaKey = (k) => k.startsWith("flip:photos:") || k.startsWith("flip:thumb:");
+
+/* The entire ledger is ONE kv row holding a JSON array of items. A blind
+   last-write-wins on that single row is how a stale copy on one device
+   deletes another device's items, so this key is reconciled by merging the
+   item arrays by id instead (see mergeItems). */
+const K_ITEMS = "flip:items";
+const parseItems = (v) => {
+  let a = v;
+  if (typeof a === "string") {
+    try { a = JSON.parse(a); } catch { a = []; }
+  }
+  return Array.isArray(a) ? a : [];
+};
+const itemStamp = (it) => (it && (it.updated || it.created)) || 0;
+/* Union of two items arrays: every id present in either copy survives; for
+   a shared id the copy with the newer per-item stamp wins (local wins ties,
+   it being the device in hand). Deletions therefore do not propagate across
+   devices — an accepted trade: resurrecting a deleted item is far less bad
+   than silently losing items a device did not know about. */
+function mergeItems(localArr, cloudArr) {
+  localArr = parseItems(localArr);
+  cloudArr = parseItems(cloudArr);
+  const byId = new Map();
+  const noId = [];
+  for (const it of cloudArr) if (it && it.id) byId.set(it.id, it);
+  for (const it of localArr) {
+    if (!it) continue;
+    if (!it.id) { noId.push(it); continue; }
+    const cur = byId.get(it.id);
+    if (!cur || itemStamp(it) >= itemStamp(cur)) byId.set(it.id, it);
+  }
+  return [...byId.values(), ...noId];
+}
 
 /* Shadow helpers. The shadow only ever holds keys this client wrote but
    could not confirm in the cloud, so it is small by construction. */
@@ -106,6 +143,7 @@ export function clearCache() {
   dirty.clear();
   failed.clear();
   userId = null;
+  primedOk = false;
   emit();
 }
 
@@ -127,6 +165,17 @@ function flush(key) {
     const entry = cache.get(key);
     try {
       if (entry) {
+        if (key === K_ITEMS && !primedOk) {
+          /* This session never confirmed the cloud ledger, so our local
+             copy may be partial/stale. Upserting it would replace the
+             whole cloud row and delete other devices' items — hold it
+             locally (dirty + failed, shown as "not synced yet") and let
+             the next successful prime union-merge it safely. */
+          dirty.add(key);
+          failed.add(key);
+          shadowSet(key, entry.value);
+          return;
+        }
         const { error } = await supabase
           .from("kv")
           .upsert(
@@ -163,6 +212,9 @@ function flush(key) {
    is left as it was so the UI keeps showing its data. */
 export async function primeCache(uid) {
   userId = uid;
+  /* Guard the ledger for the duration of the fetch: until the cloud read
+     succeeds, a flush of the ledger row must not overwrite it (see flush). */
+  primedOk = false;
   const my = ++primeToken;
   const prev = new Map(cache);
   const prevDirty = new Set(dirty);
@@ -194,9 +246,35 @@ export async function primeCache(uid) {
     emit();
     return false;
   }
+  primedOk = true; // the cloud read succeeded — the ledger is safe to write
   for (const row of data || []) {
     const at = row.updated_at || "";
     const ours = prev.get(row.key);
+    if (row.key === K_ITEMS) {
+      /* Whole-ledger row: union-merge by item id (see mergeItems) so a
+         stale copy on this device can never delete another device's items.
+         Local = in-memory cache ∪ localStorage shadow, so items this device
+         wrote that the cloud lost (another device overwrote the row) come
+         back on the next sync. Push the union up only when it adds something. */
+      const cloudArr = parseItems(row.value);
+      const shadow = shadowGet(K_ITEMS);
+      const localArr = mergeItems(
+        ours ? parseItems(ours.value) : [],
+        shadow ? parseItems(shadow.value) : []
+      );
+      const mergedStr = JSON.stringify(mergeItems(localArr, cloudArr));
+      if (mergedStr === JSON.stringify(cloudArr)) {
+        cache.set(row.key, { value: mergedStr, at });
+        dirty.delete(row.key);
+        failed.delete(row.key); // local holds nothing the cloud lacks
+      } else {
+        const atNew = ours && t(ours.at) > t(at) ? ours.at : at;
+        cache.set(row.key, { value: mergedStr, at: atNew });
+        dirty.add(row.key); // local has newer/extra items — sync the union
+        failed.delete(row.key);
+      }
+      continue;
+    }
     if (!ours) {
       if (prevDirty.has(row.key)) {
         dirty.add(row.key); // delete pending — keep it deleted, re-flush below
