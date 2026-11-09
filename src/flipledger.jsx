@@ -228,9 +228,15 @@ const normalise = (it) => ({
 export default function App({ onSignOut }) {
   const [items, setItems] = useState([]);
   const [thumbs, setThumbs] = useState({});
-  const [settings, setSettings] = useState({ currency: "RON" });
+  const [settings, setSettings] = useState({ currency: "RON", capital: 0 });
   const [ready, setReady] = useState(false);
-  const [view, setView] = useState({ name: "list" });
+  const [view, setView] = useState(() => {
+    /* Restore the view from the browser history, so a reload on an item
+       page lands back on it and the phone back-gesture can pop to the
+       list instead of leaving the app. */
+    const st = window.history.state;
+    return st && st.view ? st.view : { name: "list" };
+  });
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("new");
@@ -238,6 +244,43 @@ export default function App({ onSignOut }) {
   const toastTimer = useRef(null);
   const thumbToken = useRef(0);
   const reloadTimer = useRef(null);
+
+  /* Views push a browser-history entry, so the phone/browser back-gesture
+     pops back to the list instead of leaving the app. Going to the list
+     consumes the pushed entry (history.back) rather than stacking a
+     duplicate list entry. */
+  const navigate = useCallback((next) => {
+    setView(next);
+    const st = window.history.state;
+    if (
+      next.name === "list" &&
+      window.history.length > 1 &&
+      st && st.view && st.view.name !== "list"
+    ) {
+      window.history.back(); // the popstate handler re-sets the view
+    } else if (next.name === "list") {
+      window.history.replaceState({ view: next }, "");
+    } else {
+      window.history.pushState({ view: next }, "");
+    }
+  }, []);
+
+  useEffect(() => {
+    const onPop = (e) => {
+      const v = e.state && e.state.view ? e.state.view : { name: "list" };
+      setView(v);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  /* A restored item view may point at an item that no longer exists (it was
+     deleted before the reload) — fall back to the list once it is loaded. */
+  useEffect(() => {
+    if (ready && view.name === "item" && view.id && !items.some((i) => i.id === view.id)) {
+      navigate({ name: "list" });
+    }
+  }, [ready, view, items, navigate]);
 
   const loadThumbs = useCallback(async (list) => {
     const token = ++thumbToken.current;
@@ -249,7 +292,11 @@ export default function App({ onSignOut }) {
     const [i, s] = await Promise.all([sGet(K_ITEMS, []), sGet(K_SET, {})]);
     const list = (Array.isArray(i) ? i : []).map(normalise);
     setItems(list);
-    setSettings({ currency: s && s.currency === "EUR" ? "EUR" : "RON" });
+    setSettings({
+      currency: s && s.currency === "EUR" ? "EUR" : "RON",
+      /* keep the starting-capital setting across reloads/re-primes */
+      capital: num(s && s.capital),
+    });
     loadThumbs(list);
   }, [loadThumbs]);
 
@@ -305,6 +352,11 @@ export default function App({ onSignOut }) {
   const realized = closed.reduce((a, i) => a + profitOf(i), 0);
   const closedCost = closed.reduce((a, i) => a + costOf(i), 0);
   const roi = closedCost > 0 ? (realized / closedCost) * 100 : 0;
+  /* Bank = starting capital + profit from closed items − money tied up in
+     open items. Buying an item lowers it, selling raises it by the sale
+     price — the "how much money do I actually have" number. */
+  const capital = num(settings.capital);
+  const bank = capital + realized - tied;
   const soldRun = items.filter((i) => statusOf(i) === "sold" || statusOf(i) === "writeoff");
 
   const shown = useMemo(() => {
@@ -356,6 +408,9 @@ export default function App({ onSignOut }) {
             tied={tied}
             realized={realized}
             roi={roi}
+            bank={bank}
+            capital={capital}
+            onCapital={(ron) => persist(items, { ...settings, capital: ron })}
             closedCount={closed.length}
             holdingCount={items.filter(isOpen).length}
             runList={soldRun}
@@ -365,10 +420,10 @@ export default function App({ onSignOut }) {
             setQuery={setQuery}
             sort={sort}
             setSort={setSort}
-            onOpen={(it) => setView({ name: "item", id: it.id })}
-            onNew={() => setView({ name: "item", id: null, parent: null })}
-            onData={() => setView({ name: "data" })}
-            onMonths={() => setView({ name: "months" })}
+            onOpen={(it) => navigate({ name: "item", id: it.id })}
+            onNew={() => navigate({ name: "item", id: null, parent: null })}
+            onData={() => navigate({ name: "data" })}
+            onMonths={() => navigate({ name: "months" })}
             onSignOut={onSignOut}
             onCurrency={(c) => persist(items, { ...settings, currency: c })}
           />
@@ -383,9 +438,9 @@ export default function App({ onSignOut }) {
             cur={cur}
             flash={flash}
             code={items.reduce((m, i) => Math.max(m, Number(i.code) || 0), 0) + 1}
-            onCancel={() => setView({ name: "list" })}
-            onJump={(id) => setView({ name: "item", id })}
-            onAddPart={(lotId) => setView({ name: "item", id: null, parent: lotId })}
+            onCancel={() => navigate({ name: "list" })}
+            onJump={(id) => navigate({ name: "item", id })}
+            onAddPart={(lotId) => navigate({ name: "item", id: null, parent: lotId })}
             onSave={async (item, photos) => {
               const isNew = !items.some((i) => i.id === item.id);
               try {
@@ -404,7 +459,7 @@ export default function App({ onSignOut }) {
                 ...m,
                 [item.id]: photos[0] && photos[0].thumb ? photos[0].thumb : null,
               }));
-              setView({ name: "list" });
+              navigate({ name: "list" });
               flash(isNew ? "Logged" : "Saved");
             }}
             onDelete={async (id) => {
@@ -420,7 +475,7 @@ export default function App({ onSignOut }) {
                 delete n[id];
                 return n;
               });
-              setView({ name: "list" });
+              navigate({ name: "list" });
               flash("Deleted");
             }}
           />
@@ -430,7 +485,7 @@ export default function App({ onSignOut }) {
           <MonthsView
             items={items}
             cur={settings.currency}
-            onBack={() => setView({ name: "list" })}
+            onBack={() => navigate({ name: "list" })}
           />
         )}
 
@@ -438,7 +493,7 @@ export default function App({ onSignOut }) {
           <DataView
             items={items}
             cloud={Boolean(onSignOut)}
-            onBack={() => setView({ name: "list" })}
+            onBack={() => navigate({ name: "list" })}
             onClear={async () => {
               const keys = items.flatMap((it) => [kPhotos(it.id), kThumb(it.id)]);
               if (keys.length) window.storage.batchDelete(keys).catch(() => {});
@@ -479,7 +534,7 @@ export default function App({ onSignOut }) {
               }
               await persist(next);
               loadThumbs(next);
-              setView({ name: "list" });
+              navigate({ name: "list" });
               flash(
                 mode === "merge"
                   ? `Added ${added} items (${next.length} total)`
@@ -500,9 +555,9 @@ export default function App({ onSignOut }) {
 /* list                                                                 */
 /* ------------------------------------------------------------------ */
 function ListView({
-  items, all, thumbs, cur, tied, realized, roi, closedCount, holdingCount, runList,
+  items, all, thumbs, cur, tied, realized, roi, bank, capital, closedCount, holdingCount, runList,
   filter, setFilter, query, setQuery, sort, setSort,
-  onOpen, onNew, onData, onMonths, onCurrency, onSignOut,
+  onOpen, onNew, onData, onMonths, onCurrency, onCapital, onSignOut,
 }) {
   const maxAbs = Math.max(1, ...runList.map((i) => Math.abs(profitOf(i))));
   const counts = {
@@ -510,6 +565,12 @@ function ListView({
     holding: all.filter((i) => statusOf(i) === "holding").length,
     sold: all.filter((i) => statusOf(i) === "sold").length,
     closed: all.filter((i) => ["parted", "writeoff"].includes(statusOf(i))).length,
+  };
+  const [capEdit, setCapEdit] = useState(false);
+  const [capDraft, setCapDraft] = useState("");
+  const saveCapital = () => {
+    onCapital(toRon(capDraft, cur));
+    setCapEdit(false);
   };
 
   return (
@@ -543,12 +604,28 @@ function ListView({
         </div>
 
         <div className="fl-stats">
+          <button
+            className="fl-stat fl-statbank"
+            onClick={() => {
+              setCapDraft(toField(capital, cur));
+              setCapEdit(true);
+            }}
+            aria-label="Bank balance — tap to set your starting capital"
+          >
+            <span className="fl-label">Bank</span>
+            <span className={"fl-statval" + (bank >= 0 ? "" : " fl-loss")}>{money(bank, cur)}</span>
+            <span className="fl-sub">
+              {capital > 0
+                ? `starting ${money(capital, cur)} · tap to change`
+                : "tap to set your starting capital"}
+            </span>
+          </button>
           <div className="fl-stat">
             <span className="fl-label">Tied up</span>
             <span className="fl-statval">{money(tied, cur)}</span>
             <span className="fl-sub">{holdingCount} holding</span>
           </div>
-          <div className="fl-stat">
+          <div className="fl-stat fl-statreal">
             <span className="fl-label">Realized</span>
             <span className={"fl-statval " + (realized >= 0 ? "fl-gain" : "fl-loss")}>
               {moneySigned(realized, cur)}
@@ -559,6 +636,25 @@ function ListView({
             </span>
           </div>
         </div>
+
+        {capEdit && (
+          <div className="fl-caprow">
+            <input
+              className="fl-search fl-mono"
+              value={capDraft}
+              onChange={(e) => setCapDraft(e.target.value)}
+              placeholder={`Starting capital (${cur})`}
+              inputMode="decimal"
+              autoFocus
+            />
+            <button className="fl-icon" onClick={() => setCapEdit(false)}>
+              Cancel
+            </button>
+            <button className="fl-save" onClick={saveCapital}>
+              Save
+            </button>
+          </div>
+        )}
 
         {runList.length > 0 && (
           <div className="fl-run" aria-hidden="true">

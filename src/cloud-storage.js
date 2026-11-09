@@ -372,7 +372,30 @@ export const cloudStorage = {
     async get(key) {
       const entry = cache.get(key);
       if (entry) return { value: entry.value };
-      return shadowGet(key); // offline: serve the unconfirmed local copy
+      const sh = shadowGet(key);
+      if (sh) return sh; // offline: serve the unconfirmed local copy
+      /* Media keys (photos/thumbs) are excluded from the prime to keep it
+         light, so a cache miss on one is EXPECTED: the photos may simply
+         live in the cloud (written on another device). Fetch the single row
+         and seed the cache/shadow for next time. Non-media keys (the
+         ledger, settings) are always primed, so they stay local-only. */
+      if (isMediaKey(key) && userId) {
+        try {
+          const { data, error } = await supabase
+            .from("kv")
+            .select("key,value,updated_at")
+            .eq("user_id", userId)
+            .eq("key", key);
+          if (!error && data && data[0]) {
+            const value = JSON.stringify(data[0].value);
+            const at = data[0].updated_at || new Date().toISOString();
+            cache.set(key, { value, at });
+            shadowSet(key, value);
+            return { value };
+          }
+        } catch { /* offline — serve the fallback */ }
+      }
+      return null;
     },
 
     async set(key, value) {

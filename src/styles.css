@@ -59,7 +59,12 @@ html,body{background:#0B0E10;}
   border-radius:12px;padding:13px 14px 12px;overflow:hidden;}
 .fl-stat::before{content:"";position:absolute;inset:0 0 auto 0;height:2px;
   background:linear-gradient(90deg,var(--amber),rgba(224,163,58,0));opacity:.75;}
-.fl-stat:nth-child(2)::before{background:linear-gradient(90deg,var(--green),rgba(62,207,116,0));}
+/* accents are per-stat classes, not nth-child: the Bank card spans both
+   columns, so position no longer identifies the stat */
+.fl-statbank{grid-column:1/-1;text-align:left;}
+.fl-statbank::before{background:linear-gradient(90deg,var(--blue),rgba(84,168,218,0));}
+.fl-statreal::before{background:linear-gradient(90deg,var(--green),rgba(62,207,116,0));}
+.fl-caprow{display:flex;gap:7px;margin-top:10px;min-width:0;}
 /* subtle inner glow on the stat area to give numbers weight */
 .fl-stat::after{content:"";position:absolute;inset:0;background:linear-gradient(
   180deg,transparent,rgba(255,255,255,.02));pointer-events:none;border-radius:12px;}
