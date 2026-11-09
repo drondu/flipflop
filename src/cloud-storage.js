@@ -173,11 +173,18 @@ export async function primeCache(uid) {
   // Skip media blobs (photos + thumbs): 280 items × 6 photos = 1680 rows
   // (megabytes). The reconcile step excludes them, so dirty/failed media
   // keys are re-flushed separately below.
+  // Note: two `not.like` filters, NOT one `regex` — PostgREST has no
+  // `regex` row-filter operator (verified against the v11/v12/current
+  // filter grammars), so `key=not.regex.…` makes the whole request fail
+  // with a 400 "failed to parse filter". `like` is a core operator on
+  // every version, and media keys always start with these exact prefixes
+  // (see isMediaKey), so the two NOT LIKEs are equivalent.
   const { data, error } = await supabase
     .from("kv")
     .select("key,value,updated_at")
     .eq("user_id", uid)
-    .not("key", "regex", "flip:(photos|thumb):");
+    .not("key", "like", "flip:photos:%")
+    .not("key", "like", "flip:thumb:%");
   if (my !== primeToken) return !error; // a newer prime superseded this one
   if (error) {
     console.warn("primeCache failed", error.message);
